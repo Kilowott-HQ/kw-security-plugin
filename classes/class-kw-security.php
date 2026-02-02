@@ -24,6 +24,11 @@ if (!class_exists('KW_Security')) {
             // Security enhancements
             add_filter('xmlrpc_enabled', '__return_false');
             
+            // File security
+            add_action('init', array($this, 'disable_file_editing'));
+            add_filter('upload_mimes', array($this, 'restrict_file_uploads'));
+            add_filter('wp_handle_upload_prefilter', array($this, 'block_dangerous_uploads'));
+            
             // Comment security - disable comments completely
             add_action('admin_init', array($this, 'disable_comments_admin'));
             add_action('init', array($this, 'disable_comments_frontend'));
@@ -40,7 +45,9 @@ if (!class_exists('KW_Security')) {
          * Plugin activation hook
          */
         public static function plugin_activation() {
-            // Plugin activated successfully
+            // Create .htaccess rules for upload security
+            $instance = new self();
+            $instance->create_upload_htaccess();
         }
 
         /**
@@ -119,6 +126,141 @@ if (!class_exists('KW_Security')) {
          */
         public function remove_theme_updates() {
             return $this->remove_core_updates();
+        }
+
+        /**
+         * Disable WordPress file editing in admin
+         */
+        public function disable_file_editing() {
+            // Disable file editing in WordPress admin
+            if (!defined('DISALLOW_FILE_EDIT')) {
+                define('DISALLOW_FILE_EDIT', true);
+            }
+        }
+
+        /**
+         * Restrict file upload types to safe extensions only
+         */
+        public function restrict_file_uploads($mimes) {
+            // Remove dangerous file types
+            $dangerous_types = array(
+                'exe', 'com', 'bat', 'cmd', 'scr', 'pif', 'msi', 'dll',
+                'php', 'php3', 'php4', 'php5', 'phtml', 'phps',
+                'js', 'vbs', 'jar', 'class',
+                'sh', 'cgi', 'pl', 'py',
+                'asp', 'aspx', 'jsp',
+                'sql', 'db'
+            );
+
+            foreach ($dangerous_types as $type) {
+                if (isset($mimes[$type])) {
+                    unset($mimes[$type]);
+                }
+            }
+
+            // Also remove some that might be in different formats
+            unset($mimes['php|php3|php4|php5']);
+            unset($mimes['js']);
+            
+            return $mimes;
+        }
+
+        /**
+         * Block dangerous file uploads with additional checks
+         */
+        public function block_dangerous_uploads($file) {
+            $filename = $file['name'];
+            $filetype = wp_check_filetype($filename);
+            
+            // List of dangerous extensions (comprehensive)
+            $dangerous_extensions = array(
+                'php', 'php3', 'php4', 'php5', 'phtml', 'phps', 'phar',
+                'exe', 'com', 'bat', 'cmd', 'scr', 'pif', 'msi', 'dll',
+                'js', 'vbs', 'vbe', 'jse', 'wsf', 'wsh', 'wsc',
+                'jar', 'class', 'war', 'ear',
+                'sh', 'bash', 'csh', 'ksh', 'fish',
+                'cgi', 'pl', 'py', 'rb', 'go',
+                'asp', 'aspx', 'jsp', 'cfm', 'cfc',
+                'sql', 'db', 'sqlite', 'mdb',
+                'htaccess', 'htpasswd', 'ini', 'conf', 'config',
+                'log', 'bak', 'backup', 'old', 'orig', 'save', 'swp', 'tmp'
+            );
+
+            // Get file extension
+            $file_extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+            
+            // Block if extension is dangerous
+            if (in_array($file_extension, $dangerous_extensions)) {
+                $file['error'] = 'File type not allowed for security reasons.';
+                return $file;
+            }
+
+            // Additional check for files without extensions
+            if (empty($file_extension)) {
+                $file['error'] = 'Files without extensions are not allowed.';
+                return $file;
+            }
+
+            // Check for double extensions (e.g., file.php.jpg)
+            $filename_parts = explode('.', $filename);
+            if (count($filename_parts) > 2) {
+                foreach ($filename_parts as $part) {
+                    if (in_array(strtolower($part), $dangerous_extensions)) {
+                        $file['error'] = 'Files with multiple extensions are not allowed.';
+                        return $file;
+                    }
+                }
+            }
+
+            return $file;
+        }
+
+        /**
+         * Create .htaccess file in uploads directory to prevent PHP execution
+         */
+        public function create_upload_htaccess() {
+            $upload_dir = wp_upload_dir();
+            $htaccess_file = $upload_dir['basedir'] . '/.htaccess';
+            
+            // .htaccess content to prevent PHP execution
+            $htaccess_content = "# KW Security - Prevent PHP execution in uploads directory\n";
+            $htaccess_content .= "<Files *.php>\n";
+            $htaccess_content .= "deny from all\n";
+            $htaccess_content .= "</Files>\n";
+            $htaccess_content .= "<Files *.php3>\n";
+            $htaccess_content .= "deny from all\n";
+            $htaccess_content .= "</Files>\n";
+            $htaccess_content .= "<Files *.php4>\n";
+            $htaccess_content .= "deny from all\n";
+            $htaccess_content .= "</Files>\n";
+            $htaccess_content .= "<Files *.php5>\n";
+            $htaccess_content .= "deny from all\n";
+            $htaccess_content .= "</Files>\n";
+            $htaccess_content .= "<Files *.phtml>\n";
+            $htaccess_content .= "deny from all\n";
+            $htaccess_content .= "</Files>\n";
+            $htaccess_content .= "<Files *.phps>\n";
+            $htaccess_content .= "deny from all\n";
+            $htaccess_content .= "</Files>\n";
+            $htaccess_content .= "<Files *.phar>\n";
+            $htaccess_content .= "deny from all\n";
+            $htaccess_content .= "</Files>\n\n";
+            $htaccess_content .= "# Prevent access to any files with these extensions\n";
+            $htaccess_content .= "<FilesMatch \"\\.(php|php3|php4|php5|phtml|phps|phar|exe|com|bat|cmd|scr|cgi|pl|sh)$\">\n";
+            $htaccess_content .= "Order allow,deny\n";
+            $htaccess_content .= "Deny from all\n";
+            $htaccess_content .= "</FilesMatch>\n";
+
+            // Only create if it doesn't exist or if it doesn't contain our rules
+            if (!file_exists($htaccess_file) || strpos(file_get_contents($htaccess_file), 'KW Security') === false) {
+                // If file exists, append our rules
+                if (file_exists($htaccess_file)) {
+                    $existing_content = file_get_contents($htaccess_file);
+                    $htaccess_content = $existing_content . "\n\n" . $htaccess_content;
+                }
+                
+                file_put_contents($htaccess_file, $htaccess_content);
+            }
         }
 
         /**

@@ -7,6 +7,7 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 🔒 **Controlled Updates**: Allows security patches while blocking major updates
 - 🛡️ **Security Enhancements**: Disables XML-RPC and other security improvements
 - 💬 **Comment Security**: Completely disables comments, pingbacks, and trackbacks
+- 📁 **File Security**: Prevents dangerous file uploads and disables file editing
 - 🚫 **Update Filtering**: Intelligent filtering of WordPress core, plugin, and theme updates
 
 ## Installation
@@ -20,8 +21,8 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 ## What This Plugin Does
 
 ### Update Management
-- ✅ **Allows minor WordPress core updates** (security patches)
-- ❌ **Blocks major WordPress core updates** (feature releases)
+- ✅ **Allows minor WordPress core updates** (security patches: 6.1.1 → 6.1.2)
+- ❌ **Blocks major WordPress core updates** (feature releases: 6.1.x → 6.2.x)
 - ✅ **Allows plugin security updates** (patch versions only)
 - ❌ **Blocks regular plugin updates** (feature releases)
 - ❌ **Blocks all theme updates**
@@ -37,6 +38,13 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 🚫 **Removes comment admin pages** and menu items
 - 🔒 **Blocks comment REST API endpoints**
 - 🧹 **Hides existing comments** from frontend
+
+### File Security
+- ❌ **Disables WordPress file editor** in admin area
+- 🚫 **Blocks dangerous file uploads** (.php, .exe, .bat, .js, etc.)
+- 🔒 **Prevents PHP execution** in uploads directory
+- 🛡️ **Blocks double extensions** (e.g., file.php.jpg)
+- 📁 **Creates .htaccess protection** in uploads folder
 
 ## Technical Details
 
@@ -101,11 +109,31 @@ The plugin removes:
 - Admin bar comment notifications
 - Dashboard comment widgets
 
+### File Security
+File uploads are secured to prevent:
+- **Malicious file uploads** that could compromise the server
+- **PHP backdoors** being uploaded and executed
+- **Script execution** in the uploads directory
+- **Double extension attacks** (file.php.jpg)
+
+The plugin blocks these dangerous file types:
+- **Executable files**: .exe, .com, .bat, .cmd, .scr, .msi, .dll
+- **Script files**: .php, .js, .vbs, .py, .pl, .sh, .cgi
+- **Web scripts**: .asp, .aspx, .jsp, .cfm
+- **Database files**: .sql, .db, .sqlite, .mdb
+- **Config files**: .htaccess, .ini, .conf, .config
+- **Backup files**: .bak, .backup, .old, .tmp
+
+Additionally, it:
+- Creates .htaccess rules in uploads directory
+- Prevents execution of any PHP files in uploads
+- Disables the WordPress file editor completely
+
 ## Hooks & Filters
 
 ### Actions Added
 - `admin_init` - Disables comment admin functionality
-- `init` - Disables comment frontend functionality
+- `init` - Disables comment frontend functionality and file editing
 - `admin_menu` - Removes comment admin menu
 - `wp_enqueue_scripts` - Removes comment reply scripts
 
@@ -121,6 +149,8 @@ The plugin removes:
 - `pings_open` - Disables pingbacks/trackbacks
 - `comments_array` - Hides existing comments
 - `rest_endpoints` - Removes comment REST API endpoints
+- `upload_mimes` - Restricts allowed file upload types
+- `wp_handle_upload_prefilter` - Blocks dangerous file uploads
 
 ## Customization for Developers
 
@@ -144,6 +174,10 @@ Extend the `init_hooks()` method to add additional security measures.
 - Complete comment system disable
 - Pingback and trackback blocking
 - Comment REST API endpoint removal
+- WordPress file editor disable
+- Dangerous file upload blocking
+- PHP execution prevention in uploads
+- .htaccess upload directory protection
 - Core, plugin, and theme update filtering
 
 ## License
