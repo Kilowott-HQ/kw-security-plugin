@@ -2,10 +2,10 @@
 /*
   Plugin Name: KW Security
   Description: WordPress security enhancements and controlled updates.
-  Plugin URI: https://example.com/
+  Plugin URI: https://kilowott.com/
   Version: 1.0.0
   Author: KW Development
-  Author URI: https://example.com/
+  Author URI: https://kilowott.com/
  */
 
 // Make sure we don't expose any info if called directly
