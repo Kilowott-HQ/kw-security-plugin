@@ -3,7 +3,7 @@
   Plugin Name: KW Security
   Description: WordPress security enhancements and controlled updates.
   Plugin URI: https://kilowott.com/
-  Version: 1.0.0
+  Version: 26.04.07
   Author: KW Development
   Author URI: https://kilowott.com/
  */
@@ -15,7 +15,7 @@ if (!function_exists('add_action') || !defined('ABSPATH')) {
 }
 
 define('KW_SECURITY_NAME', 'KW Security');
-define('KW_SECURITY_VERSION', '1.0.0');
+define('KW_SECURITY_VERSION', '26.04.07');
 define('KW_SECURITY_SLUG', 'kw-security');
 define('KW_SECURITY_MINIMUM_WP_VERSION', '5.0');
 define('KW_SECURITY_PLUGIN_DIR', plugin_dir_path(__FILE__));
@@ -24,8 +24,10 @@ define('KW_SECURITY_PLUGIN_FILE', __FILE__);
 
 register_activation_hook(__FILE__, array('KW_Security', 'plugin_activation'));
 
-require_once(KW_SECURITY_PLUGIN_DIR . 'classes/class-kw-security.php');
-require_once(KW_SECURITY_PLUGIN_DIR . 'classes/hide-login-url.php');
+// Load all PHP files from the classes directory automatically
+foreach (glob(KW_SECURITY_PLUGIN_DIR . 'classes/*.php') as $file) {
+    require_once $file;
+}
 
 
 

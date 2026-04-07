@@ -168,7 +168,7 @@ Extend the `init_hooks()` method to add additional security measures.
 
 ## Changelog
 
-### Version 1.0.0
+### Version 26.04.07
 - Initial release
 - Controlled update management
 - XML-RPC security disable
