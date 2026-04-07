@@ -55,10 +55,11 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 ### File Structure
 ```
 kw-security/
-├── kw-security.php                       # Main plugin file
+├── kw-security.php						# Main plugin file
 ├── classes/
-│   └── class-kw-security.php             # Main security class
-└── README.md                             # This file
+│   └── class-kw-security.php			# Main security class
+│   └── hide-login-url.php				# Custom login routing and URL rewrite engine
+└── README.md							# This file
 ```
 
 ### Constants Defined

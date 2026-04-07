@@ -25,6 +25,7 @@ define('KW_SECURITY_PLUGIN_FILE', __FILE__);
 register_activation_hook(__FILE__, array('KW_Security', 'plugin_activation'));
 
 require_once(KW_SECURITY_PLUGIN_DIR . 'classes/class-kw-security.php');
+require_once(KW_SECURITY_PLUGIN_DIR . 'classes/hide-login-url.php');
 
 
 
