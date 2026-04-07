@@ -180,6 +180,7 @@ Extend the `init_hooks()` method to add additional security measures.
 - PHP execution prevention in uploads
 - .htaccess upload directory protection
 - Core, plugin, and theme update filtering
+- **New Feature:** Added Custom Login URL rendering to completely hide the default `wp-login.php` and `wp-admin` workflows.
 
 ## License
 
