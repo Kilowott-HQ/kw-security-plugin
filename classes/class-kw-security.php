@@ -18,24 +18,30 @@ if (!class_exists('KW_Security')) {
             // Security update controls
             add_filter('allow_minor_auto_core_updates', '__return_true');
             add_filter('allow_major_auto_core_updates', '__return_false');
-            add_filter('auto_update_plugin', array($this, 'allow_security_updates_only'));
+            add_filter('auto_update_plugin', array($this, 'allow_security_updates_only'), 10, 2);
             add_filter('auto_update_theme', '__return_false');
-            
+
             // Security enhancements
             add_filter('xmlrpc_enabled', '__return_false');
-            
+            // Defense-in-depth: strip pingback methods even if XML-RPC gets re-enabled.
+            add_filter('xmlrpc_methods', array($this, 'disable_xmlrpc_pingback_methods'));
+
             // File security
             add_action('init', array($this, 'disable_file_editing'));
             add_filter('upload_mimes', array($this, 'restrict_file_uploads'));
             add_filter('wp_handle_upload_prefilter', array($this, 'block_dangerous_uploads'));
-            
+
             // Comment security - disable comments completely
             add_action('admin_init', array($this, 'disable_comments_admin'));
-            add_action('init', array($this, 'disable_comments_frontend'));
+            add_action('wp_dashboard_setup', array($this, 'remove_dashboard_comments_widget'));
+            add_action('admin_menu', array($this, 'disable_comments_admin_menu'));
+            add_action('init', array($this, 'disable_comments_admin_bar'));
+            add_action('wp_enqueue_scripts', array($this, 'disable_comments_reply_script'), 100);
+            add_filter('rest_endpoints', array($this, 'disable_comments_rest_api'));
             add_filter('comments_open', '__return_false', 20, 2);
             add_filter('pings_open', '__return_false', 20, 2);
             add_filter('comments_array', '__return_empty_array', 10, 2);
-            
+
             // Update notification filtering
             add_filter('pre_site_transient_update_core', array($this, 'filter_core_updates'));
             add_filter('pre_site_transient_update_themes', array($this, 'remove_theme_updates'));
@@ -51,6 +57,19 @@ if (!class_exists('KW_Security')) {
         }
 
         /**
+         * Strip pingback methods from the XML-RPC server.
+         *
+         * Defense-in-depth: even with `xmlrpc_enabled` filtered to false,
+         * unsetting these methods removes a common DDoS / port-scan amplifier
+         * if XML-RPC is re-enabled by another plugin or a custom filter.
+         */
+        public function disable_xmlrpc_pingback_methods($methods) {
+            unset($methods['pingback.ping']);
+            unset($methods['pingback.extensions.getPingbacks']);
+            return $methods;
+        }
+
+        /**
          * Allow security updates only for plugins
          */
         public function allow_security_updates_only($update, $item = null) {
@@ -62,20 +81,36 @@ if (!class_exists('KW_Security')) {
         }
 
         /**
-         * Check if update contains security fixes
+         * Check if update contains security fixes.
+         *
+         * Allows updates where the major and minor version stay the same
+         * (e.g. 1.2.3 -> 1.2.4, or 1.2 -> 1.2.1). Versions with fewer than
+         * three numeric parts are zero-padded so 2-part schemes still get
+         * patch updates instead of being silently blocked.
+         *
+         * Note: this only governs *automatic* background updates. Admins
+         * can still update any plugin manually from the Plugins screen.
          */
         private function is_security_update($item) {
-            if (isset($item->new_version) && isset($item->Version)) {
-                // Allow patch versions (x.x.X) which are typically security fixes
-                $current_parts = explode('.', $item->Version);
-                $new_parts = explode('.', $item->new_version);
-                
-                if (count($current_parts) >= 3 && count($new_parts) >= 3) {
-                    // Same major and minor version = likely security patch
-                    return ($current_parts[0] === $new_parts[0] && $current_parts[1] === $new_parts[1]);
-                }
+            if (!isset($item->new_version) || !isset($item->Version)) {
+                return false;
             }
-            return false;
+
+            $current_parts = $this->normalize_version_parts((string) $item->Version);
+            $new_parts     = $this->normalize_version_parts((string) $item->new_version);
+
+            // Same major and minor = patch update (allowed for auto-update).
+            return ($current_parts[0] === $new_parts[0] && $current_parts[1] === $new_parts[1]);
+        }
+
+        /**
+         * Normalize a version string into [major, minor, patch] integers.
+         * Strips suffixes like "-beta" and pads short versions with zeros.
+         */
+        private function normalize_version_parts($version) {
+            $clean = preg_replace('/[^0-9.]/', '', $version);
+            $parts = array_map('intval', explode('.', $clean));
+            return array_pad($parts, 3, 0);
         }
 
         /**
@@ -269,15 +304,12 @@ if (!class_exists('KW_Security')) {
         public function disable_comments_admin() {
             // Redirect any user trying to access comments page
             global $pagenow;
-            
+
             if ($pagenow === 'edit-comments.php') {
                 wp_redirect(admin_url());
                 exit;
             }
-            
-            // Remove comments metabox from dashboard
-            remove_meta_box('dashboard_recent_comments', 'dashboard', 'normal');
-            
+
             // Disable support for comments and trackbacks in post types
             foreach (get_post_types() as $post_type) {
                 if (post_type_supports($post_type, 'comments')) {
@@ -288,27 +320,11 @@ if (!class_exists('KW_Security')) {
         }
 
         /**
-         * Disable comments on frontend
+         * Remove the "Recent Comments" dashboard widget. Hooked on
+         * wp_dashboard_setup so it runs after the meta box is registered.
          */
-        public function disable_comments_frontend() {
-            // Close comments on the frontend
-            add_filter('comments_open', '__return_false', 20, 2);
-            add_filter('pings_open', '__return_false', 20, 2);
-            
-            // Hide existing comments
-            add_filter('comments_array', '__return_empty_array', 10, 2);
-            
-            // Remove comments page in admin menu
-            add_action('admin_menu', array($this, 'disable_comments_admin_menu'));
-            
-            // Remove comments links from admin bar
-            add_action('init', array($this, 'disable_comments_admin_bar'));
-            
-            // Remove comment-reply script for themes that include it
-            add_action('wp_enqueue_scripts', array($this, 'disable_comments_reply_script'), 100);
-            
-            // Remove REST API comment endpoints
-            add_filter('rest_endpoints', array($this, 'disable_comments_rest_api'));
+        public function remove_dashboard_comments_widget() {
+            remove_meta_box('dashboard_recent_comments', 'dashboard', 'normal');
         }
 
         /**
