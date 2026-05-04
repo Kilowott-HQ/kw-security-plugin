@@ -43,11 +43,22 @@ if ( ! class_exists( 'KW_Security_Headers' ) ) {
          */
         private function get_headers() {
             $headers = array(
-                'X-Frame-Options'        => 'SAMEORIGIN',
-                'X-Content-Type-Options' => 'nosniff',
-                'Referrer-Policy'        => 'strict-origin-when-cross-origin',
-                'X-XSS-Protection'       => '0',
-                'Permissions-Policy'     => 'interest-cohort=(), browsing-topics=()',
+                'X-Frame-Options'         => 'SAMEORIGIN',
+                'X-Content-Type-Options'  => 'nosniff',
+                'Referrer-Policy'         => 'strict-origin-when-cross-origin',
+                'X-XSS-Protection'        => '0',
+                'Permissions-Policy'      => 'interest-cohort=(), browsing-topics=()',
+                // Deliberately minimal CSP. Only two directives:
+                //   - frame-ancestors 'self' is the modern equivalent of
+                //     X-Frame-Options: SAMEORIGIN (clickjacking protection).
+                //   - upgrade-insecure-requests auto-rewrites stray http://
+                //     refs to https:// in the browser; safe on HTTPS-only sites.
+                // No default-src/script-src/style-src/etc. are set, so
+                // scripts, styles, images, fonts, connections, and embeds
+                // remain unrestricted — nothing that loads today will break.
+                // To harden per-site, override via the kw_security_headers
+                // filter after testing the stricter policy on staging.
+                'Content-Security-Policy' => "upgrade-insecure-requests; frame-ancestors 'self'",
             );
 
             // HSTS only over HTTPS — moderate max-age, no subdomain coverage,
