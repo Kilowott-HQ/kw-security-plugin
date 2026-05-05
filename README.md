@@ -199,17 +199,17 @@ git push
 
 ### Step 3 — Create the release zip
 
-Run this in PowerShell from anywhere (replace the version in the filename if you want):
+Clone or pull the repo locally, then run this in PowerShell **from inside the repo's parent directory**:
 
 ```powershell
 $tmp = "$env:TEMP\kw-security"
 if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
-Copy-Item -Path "C:\xampp\htdocs\kw-security-plugin" -Destination $tmp -Recurse -Force
-Compress-Archive -Path $tmp -DestinationPath "C:\xampp\htdocs\kw-security.zip" -Force
+Copy-Item -Path ".\kw-security-plugin" -Destination $tmp -Recurse -Force
+Compress-Archive -Path $tmp -DestinationPath ".\kw-security.zip" -Force
 Remove-Item $tmp -Recurse -Force
 ```
 
-This creates `kw-security.zip` at `C:\xampp\htdocs\kw-security.zip` with the correct root folder name (`kw-security\`) that WordPress expects when installing the update.
+This creates `kw-security.zip` in the current directory with the correct root folder name (`kw-security\`) that WordPress expects when installing the update.
 
 > **Why the folder name matters:** When WordPress extracts the update zip, it uses the root folder name as the plugin directory. It must match the existing installed folder (`kw-security`) — a mismatch creates a duplicate plugin instead of updating the existing one.
 
