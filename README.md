@@ -272,6 +272,10 @@ The update notice should appear under KW Security on the Plugins screen within a
 
 ## Changelog
 
+### Version 26.05.09
+- Bug fix: clicking **Save Changes** on Settings → KW Security did nothing because the File Integrity scan/reset buttons were rendered as nested forms inside the main settings form. HTML disallows nested forms, so the browser silently closed the outer form and orphaned the Save button.
+- File Integrity status panel now renders below the settings form instead of inside it.
+
 ### Version 26.05.08
 - **Strong Password Policy**: enforces 12+ character passwords with uppercase, lowercase, digit, and special character requirements for administrator accounts. Applied at user creation, profile password changes, and password reset. Other roles are unaffected by default; the `kw_security_password_policy_roles` filter extends coverage if needed.
 

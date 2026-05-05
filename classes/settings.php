@@ -203,15 +203,11 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 );
             }
 
-            // ---- Section 2: File Integrity status ----------------------
-            add_settings_section(
-                'kw_security_file_integrity_section',
-                __( 'File Integrity Status', 'kw-security' ),
-                array( $this, 'file_integrity_section_desc' ),
-                self::PAGE_SLUG
-            );
-
-            // ---- Section 3: Hide Login URL configuration ---------------
+            // ---- Section 2: Hide Login URL configuration ---------------
+            // (File Integrity status is rendered OUTSIDE the main settings
+            // form by render_file_integrity_panel() — its action buttons
+            // post to admin-post.php as separate forms, and HTML does not
+            // allow nested forms.)
             add_settings_section(
                 'kw_security_hide_login_section',
                 __( 'Hide Login URL Configuration', 'kw-security' ),
@@ -262,9 +258,19 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 . '</p>';
         }
 
-        public function file_integrity_section_desc() {
+        /**
+         * Render the File Integrity panel. Rendered OUTSIDE the main
+         * settings form because its action buttons are their own forms
+         * (HTML does not allow nested forms — nesting silently breaks
+         * the outer "Save Changes" button).
+         */
+        public function render_file_integrity_panel() {
+            ?>
+            <h2><?php esc_html_e( 'File Integrity Status', 'kw-security' ); ?></h2>
+            <?php
+
             if ( ! self::is_enabled( 'file_integrity' ) ) {
-                echo '<p>' . esc_html__( 'Enable the "File Integrity Monitoring" feature toggle above to activate daily scans.', 'kw-security' ) . '</p>';
+                echo '<p>' . esc_html__( 'Enable the "File Integrity Monitoring" feature toggle above and save settings to activate daily scans.', 'kw-security' ) . '</p>';
                 return;
             }
 
@@ -440,6 +446,8 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     submit_button();
                     ?>
                 </form>
+
+                <?php $this->render_file_integrity_panel(); ?>
             </div>
             <?php
         }
