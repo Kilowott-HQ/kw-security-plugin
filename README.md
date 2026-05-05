@@ -55,11 +55,16 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 ### File Structure
 ```
 kw-security/
-├── kw-security.php						# Main plugin file
+├── kw-security.php                      # Main plugin file & autoloader
 ├── classes/
-│   └── class-kw-security.php			# Main security class
-│   └── hide-login-url.php				# Custom login routing and URL rewrite engine
-└── README.md							# This file
+│   ├── class-kw-security.php           # Core security class
+│   ├── hide-login-url.php              # Custom login URL routing
+│   ├── security-headers.php            # HTTP security headers
+│   ├── user-enumeration.php            # Block user enumeration
+│   └── updater.php                     # GitHub-based update checker
+├── vendor/
+│   └── plugin-update-checker/          # PUC v5.6 library (vendored)
+└── README.md                           # This file
 ```
 
 ### Constants Defined
@@ -166,7 +171,83 @@ private function is_security_update($item) {
 ### Adding More Security Features
 Extend the `init_hooks()` method to add additional security measures.
 
+## Releasing a New Version
+
+Follow these steps every time you want to push an update to client sites.
+
+### Step 1 — Bump the version
+
+In `kw-security.php`, update **both** places:
+
+```php
+// Plugin header (line ~4)
+Version: 26.05.06
+
+// Constant (line ~18)
+define('KW_SECURITY_VERSION', '26.05.06');
+```
+
+Version format is `YY.MM.PATCH` (e.g. `26.05.06` = year 2026, May, patch 6).
+
+### Step 2 — Commit and push
+
+```bash
+git add kw-security.php
+git commit -m "chore: bump version to 26.05.06"
+git push
+```
+
+### Step 3 — Create the release zip
+
+Run this in PowerShell from anywhere (replace the version in the filename if you want):
+
+```powershell
+$tmp = "$env:TEMP\kw-security"
+if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+Copy-Item -Path "C:\xampp\htdocs\kw-security-plugin" -Destination $tmp -Recurse -Force
+Compress-Archive -Path $tmp -DestinationPath "C:\xampp\htdocs\kw-security.zip" -Force
+Remove-Item $tmp -Recurse -Force
+```
+
+This creates `kw-security.zip` at `C:\xampp\htdocs\kw-security.zip` with the correct root folder name (`kw-security\`) that WordPress expects when installing the update.
+
+> **Why the folder name matters:** When WordPress extracts the update zip, it uses the root folder name as the plugin directory. It must match the existing installed folder (`kw-security`) — a mismatch creates a duplicate plugin instead of updating the existing one.
+
+### Step 4 — Publish the GitHub release
+
+1. Go to [github.com/Kilowott-HQ/kw-security-plugin/releases/new](https://github.com/Kilowott-HQ/kw-security-plugin/releases/new)
+2. **Tag:** enter the version number exactly as in the plugin header (e.g. `26.05.06`) — no `v` prefix
+3. **Target:** `main`
+4. **Title:** `KW Security 26.05.06`
+5. **Release notes:** brief summary of what changed
+6. **Attach binaries:** drag and drop `kw-security.zip` from Step 3
+7. Click **Publish release**
+
+### Step 5 — Verify on a site
+
+Visit this URL while logged in as admin on any site running the plugin:
+
+```
+https://example.com/wp-admin/plugins.php?force-check=1
+```
+
+The update notice should appear under KW Security on the Plugins screen within a few seconds.
+
+> **Note:** Without `?force-check=1`, WordPress checks for updates every 12 hours. The force-check bypasses the cache immediately.
+
+---
+
 ## Changelog
+
+### Version 26.05.04
+- HTTP security headers (X-Frame-Options, Content-Security-Policy, HSTS, Referrer-Policy, Permissions-Policy, X-Content-Type-Options)
+- Block user enumeration via `?author=N` for anonymous visitors
+- Restrict `/wp/v2/users` REST endpoint to authenticated users only
+- Disable XML-RPC pingback methods
+- GitHub-based plugin update notifications via plugin-update-checker v5.6
+- Fixed: `allow_security_updates_only` was silently blocking all plugin auto-updates (missing second filter argument)
+- Fixed: duplicate hooks in comment disabling frontend logic
+- Fixed: dashboard Recent Comments widget removal now fires at correct hook timing
 
 ### Version 26.04.07
 - Initial release
