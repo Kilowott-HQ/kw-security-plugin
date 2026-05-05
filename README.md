@@ -10,6 +10,7 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 👤 **User Enumeration Protection**: Block `?author=N` leaks and gate `/wp/v2/users` REST endpoint
 - 🔐 **Login Rate Limiting**: Lock out IPs after repeated failed login attempts
 - 🔍 **File Integrity Monitoring**: Daily scan of WP root for unknown PHP files and modifications to `index.php` / `wp-config.php`
+- 🔑 **Strong Password Policy**: Enforce 12+ char passwords with mixed case, digits, and symbols for administrator accounts
 - 💬 **Comment Security**: Disables comments, pingbacks, and trackbacks
 - 📁 **File Security**: Prevents dangerous file uploads and disables file editing
 - 🔁 **GitHub Update Notifications**: Surfaces new releases on the WordPress Updates screen
@@ -39,6 +40,7 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | Block User Enumeration | ON | `/?author=N` 404, auth required for `/wp/v2/users` |
 | Login Rate Limiting | ON | 5 failed attempts / 15 min → 1-hour IP lockout; generic "Invalid login credentials" error |
 | File Integrity Monitoring | ON | Daily WP-Cron scan; emails admin on unknown PHP in root or modified `index.php` / `wp-config.php` |
+| Strong Password Policy (Admins) | ON | Requires 12+ chars with upper, lower, digit, and symbol when creating/updating administrator passwords |
 | Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
 
 > **About "Hide Login URL":** Disabled by default because changing the login URL is a disruptive change that requires bookmarking a custom URL. Enable only when ready, and configure the slug in the same Settings → KW Security page before saving.
@@ -91,6 +93,7 @@ kw-security/
 │   ├── user-enumeration.php            # Block user enumeration
 │   ├── login-rate-limiter.php          # Failed-login IP lockout
 │   ├── file-integrity.php              # Daily root-dir scan + email alerts
+│   ├── password-policy.php             # Strong password enforcement (admin role)
 │   └── updater.php                     # GitHub-based update checker
 ├── vendor/
 │   └── plugin-update-checker/          # PUC v5.6 library (vendored)
@@ -268,6 +271,9 @@ The update notice should appear under KW Security on the Plugins screen within a
 ---
 
 ## Changelog
+
+### Version 26.05.08
+- **Strong Password Policy**: enforces 12+ character passwords with uppercase, lowercase, digit, and special character requirements for administrator accounts. Applied at user creation, profile password changes, and password reset. Other roles are unaffected by default; the `kw_security_password_policy_roles` filter extends coverage if needed.
 
 ### Version 26.05.07
 - **Login Rate Limiting**: locks out IPs for 1 hour after 5 failed attempts within 15 minutes; generic error message prevents username enumeration

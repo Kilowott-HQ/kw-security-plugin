@@ -62,6 +62,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'user_enumeration'  => true,
                 'login_rate_limit'  => true,
                 'file_integrity'    => true,
+                'password_policy'   => true,
                 'hide_login_url'    => false,
             );
         }
@@ -125,6 +126,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'file_integrity' => array(
                     'label'       => __( 'File Integrity Monitoring', 'kw-security' ),
                     'description' => __( 'Daily WP-Cron scan of the WordPress root directory. Emails the site admin when unknown PHP files appear or when index.php / wp-config.php are modified.', 'kw-security' ),
+                ),
+                'password_policy' => array(
+                    'label'       => __( 'Strong Password Policy (Admins)', 'kw-security' ),
+                    'description' => __( 'Requires administrator passwords to be at least 12 characters and include an uppercase letter, a lowercase letter, a number, and a special character. Enforced when admins are created, when passwords are changed, and during password reset. Other roles are unaffected.', 'kw-security' ),
                 ),
                 'hide_login_url' => array(
                     'label'       => __( 'Hide Login URL', 'kw-security' ),
