@@ -12,48 +12,69 @@ if (!class_exists('KW_Security')) {
         }
 
         /**
-         * Initializes WordPress hooks for security features
+         * Initializes WordPress hooks for security features.
+         *
+         * Each feature group is gated by a Settings → KW Security toggle so
+         * sites can disable individual features (e.g. enable comments) without
+         * forking the plugin.
          */
         private function init_hooks() {
-            // Security update controls
-            add_filter('allow_minor_auto_core_updates', '__return_true');
-            add_filter('allow_major_auto_core_updates', '__return_false');
-            add_filter('auto_update_plugin', array($this, 'allow_security_updates_only'), 10, 2);
-            add_filter('auto_update_theme', '__return_false');
+            // Controlled auto-updates
+            if (KW_Security_Settings::is_enabled('update_management')) {
+                add_filter('allow_minor_auto_core_updates', '__return_true');
+                add_filter('allow_major_auto_core_updates', '__return_false');
+                add_filter('auto_update_plugin', array($this, 'allow_security_updates_only'), 10, 2);
+                add_filter('auto_update_theme', '__return_false');
+                add_filter('pre_site_transient_update_core', array($this, 'filter_core_updates'));
+                add_filter('pre_site_transient_update_themes', array($this, 'remove_theme_updates'));
+            }
 
-            // Security enhancements
-            add_filter('xmlrpc_enabled', '__return_false');
-            // Defense-in-depth: strip pingback methods even if XML-RPC gets re-enabled.
-            add_filter('xmlrpc_methods', array($this, 'disable_xmlrpc_pingback_methods'));
+            // XML-RPC pingback hardening
+            if (KW_Security_Settings::is_enabled('xmlrpc_pingback')) {
+                add_filter('xmlrpc_enabled', '__return_false');
+                // Defense-in-depth: strip pingback methods even if XML-RPC gets re-enabled.
+                add_filter('xmlrpc_methods', array($this, 'disable_xmlrpc_pingback_methods'));
+            }
 
-            // File security
-            add_action('init', array($this, 'disable_file_editing'));
-            add_filter('upload_mimes', array($this, 'restrict_file_uploads'));
-            add_filter('wp_handle_upload_prefilter', array($this, 'block_dangerous_uploads'));
+            // File upload restrictions and editor disable
+            if (KW_Security_Settings::is_enabled('file_security')) {
+                add_action('init', array($this, 'disable_file_editing'));
+                add_filter('upload_mimes', array($this, 'restrict_file_uploads'));
+                add_filter('wp_handle_upload_prefilter', array($this, 'block_dangerous_uploads'));
+            }
 
-            // Comment security - disable comments completely
-            add_action('admin_init', array($this, 'disable_comments_admin'));
-            add_action('wp_dashboard_setup', array($this, 'remove_dashboard_comments_widget'));
-            add_action('admin_menu', array($this, 'disable_comments_admin_menu'));
-            add_action('init', array($this, 'disable_comments_admin_bar'));
-            add_action('wp_enqueue_scripts', array($this, 'disable_comments_reply_script'), 100);
-            add_filter('rest_endpoints', array($this, 'disable_comments_rest_api'));
-            add_filter('comments_open', '__return_false', 20, 2);
-            add_filter('pings_open', '__return_false', 20, 2);
-            add_filter('comments_array', '__return_empty_array', 10, 2);
-
-            // Update notification filtering
-            add_filter('pre_site_transient_update_core', array($this, 'filter_core_updates'));
-            add_filter('pre_site_transient_update_themes', array($this, 'remove_theme_updates'));
+            // Comment system disable
+            if (KW_Security_Settings::is_enabled('comments')) {
+                add_action('admin_init', array($this, 'disable_comments_admin'));
+                add_action('wp_dashboard_setup', array($this, 'remove_dashboard_comments_widget'));
+                add_action('admin_menu', array($this, 'disable_comments_admin_menu'));
+                add_action('init', array($this, 'disable_comments_admin_bar'));
+                add_action('wp_enqueue_scripts', array($this, 'disable_comments_reply_script'), 100);
+                add_filter('rest_endpoints', array($this, 'disable_comments_rest_api'));
+                add_filter('comments_open', '__return_false', 20, 2);
+                add_filter('pings_open', '__return_false', 20, 2);
+                add_filter('comments_array', '__return_empty_array', 10, 2);
+            }
         }
 
         /**
-         * Plugin activation hook
+         * Plugin activation hook.
+         *
+         * Seeds default feature toggles (only on first activation — uses
+         * add_option so reactivation does not reset user preferences) and
+         * runs feature-specific setup that respects those toggles.
          */
         public static function plugin_activation() {
-            // Create .htaccess rules for upload security
-            $instance = new self();
-            $instance->create_upload_htaccess();
+            // Seed defaults on first activation — does nothing if option exists.
+            if (class_exists('KW_Security_Settings')) {
+                add_option(KW_Security_Settings::OPTION_NAME, KW_Security_Settings::get_defaults());
+            }
+
+            // Create .htaccess rules for upload security only if file security is on.
+            if (KW_Security_Settings::is_enabled('file_security')) {
+                $instance = new self();
+                $instance->create_upload_htaccess();
+            }
         }
 
         /**

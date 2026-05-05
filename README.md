@@ -5,10 +5,13 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 ## Features
 
 - 🔒 **Controlled Updates**: Allows security patches while blocking major updates
-- 🛡️ **Security Enhancements**: Disables XML-RPC and other security improvements
-- 💬 **Comment Security**: Completely disables comments, pingbacks, and trackbacks
+- 🛡️ **HTTP Security Headers**: X-Frame-Options, CSP, HSTS, Referrer-Policy, Permissions-Policy
+- 🚪 **Hide Login URL**: Replace `/wp-login.php` with a custom slug
+- 👤 **User Enumeration Protection**: Block `?author=N` leaks and gate `/wp/v2/users` REST endpoint
+- 💬 **Comment Security**: Disables comments, pingbacks, and trackbacks
 - 📁 **File Security**: Prevents dangerous file uploads and disables file editing
-- 🚫 **Update Filtering**: Intelligent filtering of WordPress core, plugin, and theme updates
+- 🔁 **GitHub Update Notifications**: Surfaces new releases on the WordPress Updates screen
+- ⚙️ **Feature Toggles**: Every feature can be enabled or disabled per site from **Settings → KW Security**
 
 ## Installation
 
@@ -17,6 +20,26 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 3. Click **Upload Plugin** and select the zip file
 4. Click **Install Now**
 5. Click **Activate Plugin**
+6. Configure feature toggles at **Settings → KW Security**
+
+## Feature Toggles
+
+Every security feature can be turned on or off per site from **Settings → KW Security**.
+Defaults: all features enabled, except **Hide Login URL** (opt-in, off by default).
+
+| Toggle | Default | What it controls |
+|---|---|---|
+| Disable Comments | ON | Comments site-wide, dashboard widget, REST endpoints, pingbacks |
+| File Security | ON | Dangerous upload blocking, file editor disable, `/uploads/.htaccess` |
+| Controlled Auto-Updates | ON | Security-only auto-updates for core/plugins/themes |
+| Disable XML-RPC Pingbacks | ON | XML-RPC disable + pingback method removal |
+| HTTP Security Headers | ON | X-Frame-Options, CSP, HSTS, Referrer-Policy, Permissions-Policy |
+| Block User Enumeration | ON | `/?author=N` 404, auth required for `/wp/v2/users` |
+| Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
+
+> **About "Hide Login URL":** Disabled by default because changing the login URL is a disruptive change that requires bookmarking a custom URL. Enable only when ready, and configure the slug in the same Settings → KW Security page before saving.
+
+When a feature is disabled, **none of its hooks are registered** — there is zero runtime cost.
 
 ## What This Plugin Does
 
@@ -57,7 +80,8 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 kw-security/
 ├── kw-security.php                      # Main plugin file & autoloader
 ├── classes/
-│   ├── class-kw-security.php           # Core security class
+│   ├── settings.php                    # Feature toggle UI + is_enabled() helper
+│   ├── class-kw-security.php           # Core security class (gated by toggles)
 │   ├── hide-login-url.php              # Custom login URL routing
 │   ├── security-headers.php            # HTTP security headers
 │   ├── user-enumeration.php            # Block user enumeration
@@ -238,6 +262,13 @@ The update notice should appear under KW Security on the Plugins screen within a
 ---
 
 ## Changelog
+
+### Version 26.05.06
+- **Feature toggle system**: every security feature can now be enabled or disabled from **Settings → KW Security**
+- All features ON by default, except Hide Login URL which is opt-in
+- Disabled features skip hook registration entirely (zero runtime cost)
+- Hide Login URL slug/redirect configuration moved from Settings → General to the new KW Security settings page
+- "Settings" link added to the plugin row on the Plugins screen for quick access
 
 ### Version 26.05.04
 - HTTP security headers (X-Frame-Options, Content-Security-Policy, HSTS, Referrer-Policy, Permissions-Policy, X-Content-Type-Options)

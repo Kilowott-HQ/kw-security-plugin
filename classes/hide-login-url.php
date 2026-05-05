@@ -35,10 +35,6 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 
 			// Conflict detection. Hooked early to see if WPS Hide Login is active.
 			add_action( 'plugins_loaded', array( $this, 'init_or_conflict' ), 1 );
-
-			// Admin notice after saving settings.
-			add_action( 'admin_notices',         array( $this, 'admin_notices' ) );
-			add_action( 'network_admin_notices', array( $this, 'admin_notices' ) );
 		}
 
 		/**
@@ -57,9 +53,6 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 			add_action( 'wp_loaded',      array( $this, 'wp_loaded' ) );
 			add_action( 'setup_theme',    array( $this, 'setup_theme' ), 1 );
 			add_action( 'init',           array( $this, 'init_block_access' ) );
-
-			// Admin settings (shown on Settings → General).
-			add_action( 'admin_init', array( $this, 'admin_init' ) );
 
 			// URL filters — rewrite every internal wp-login.php reference.
 			add_filter( 'site_url',         array( $this, 'site_url' ),         10, 4 );
@@ -485,96 +478,6 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 		}
 
 		// ----------------------------------------------------------------
-		// Admin settings (on Settings → General)
-		// ----------------------------------------------------------------
-
-		public function admin_init() {
-
-			add_settings_section(
-				'kw-hide-login-section',
-				__( 'Hide Login URL', 'kw-security' ),
-				array( $this, 'settings_section_desc' ),
-				'general'
-			);
-
-			add_settings_field(
-				'whl_page',
-				'<label for="whl_page">' . __( 'Login url', 'kw-security' ) . '</label>',
-				array( $this, 'whl_page_input' ),
-				'general',
-				'kw-hide-login-section'
-			);
-
-			add_settings_field(
-				'whl_redirect_admin',
-				'<label for="whl_redirect_admin">' . __( 'Redirection url', 'kw-security' ) . '</label>',
-				array( $this, 'whl_redirect_admin_input' ),
-				'general',
-				'kw-hide-login-section'
-			);
-
-			register_setting( 'general', 'whl_page',           'sanitize_title_with_dashes' );
-			register_setting( 'general', 'whl_redirect_admin', 'sanitize_title_with_dashes' );
-		}
-
-		public function settings_section_desc() {
-			echo '<p id="kw-hide-login-settings">'
-				. esc_html__( 'Protect your site by changing the login URL. Direct access to wp-login.php and wp-admin will be redirected to the URL below.', 'kw-security' )
-				. '</p>';
-		}
-
-		public function whl_page_input() {
-			if ( get_option( 'permalink_structure' ) ) {
-				echo '<code>' . trailingslashit( home_url() ) . '</code> '
-					. '<input id="whl_page" type="text" name="whl_page" value="' . esc_attr( $this->new_login_slug() ) . '">'
-					. ( $this->use_trailing_slashes() ? ' <code>/</code>' : '' );
-			} else {
-				echo '<code>' . trailingslashit( home_url() ) . '?</code> '
-					. '<input id="whl_page" type="text" name="whl_page" value="' . esc_attr( $this->new_login_slug() ) . '">';
-			}
-			echo '<p class="description">'
-				. esc_html__( 'The slug for your custom login page. Avoid "login", "admin", or "wp-login".', 'kw-security' )
-				. '</p>';
-		}
-
-		public function whl_redirect_admin_input() {
-			if ( get_option( 'permalink_structure' ) ) {
-				echo '<code>' . trailingslashit( home_url() ) . '</code> '
-					. '<input id="whl_redirect_admin" type="text" name="whl_redirect_admin" value="' . esc_attr( $this->new_redirect_slug() ) . '">'
-					. ( $this->use_trailing_slashes() ? ' <code>/</code>' : '' );
-			} else {
-				echo '<code>' . trailingslashit( home_url() ) . '?</code> '
-					. '<input id="whl_redirect_admin" type="text" name="whl_redirect_admin" value="' . esc_attr( $this->new_redirect_slug() ) . '">';
-			}
-			echo '<p class="description">'
-				. esc_html__( 'Where unauthorized visitors are redirected when they try to access wp-login.php or wp-admin. Use "404" to show a not-found page.', 'kw-security' )
-				. '</p>';
-		}
-
-		/**
-		 * Show a notice after settings are saved with the new login URL.
-		 */
-		public function admin_notices() {
-			global $pagenow;
-
-			if (
-				! is_network_admin()
-				&& 'options-general.php' === $pagenow
-				&& isset( $_GET['settings-updated'] )
-				&& ! isset( $_GET['page'] )
-			) {
-				echo '<div class="updated notice is-dismissible"><p>'
-					. sprintf(
-						/* translators: %1$s %2$s = custom login URL */
-						__( 'Your login page is now here: <strong><a href="%1$s">%2$s</a></strong>. Bookmark this page!', 'kw-security' ),
-						esc_url( $this->new_login_url() ),
-						esc_html( $this->new_login_url() )
-					)
-					. '</p></div>';
-			}
-		}
-
-		// ----------------------------------------------------------------
 		// Block access to wp-signup / wp-activate / customize
 		// ----------------------------------------------------------------
 
@@ -670,6 +573,8 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 
 	} // end class KW_Hide_Login
 
-	new KW_Hide_Login();
+	if ( KW_Security_Settings::is_enabled( 'hide_login_url' ) ) {
+		new KW_Hide_Login();
+	}
 
 } // end if class_exists

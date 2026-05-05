@@ -106,5 +106,7 @@ if ( ! class_exists( 'KW_Security_Headers' ) ) {
         }
     }
 
-    new KW_Security_Headers();
+    if ( KW_Security_Settings::is_enabled( 'security_headers' ) ) {
+        new KW_Security_Headers();
+    }
 }

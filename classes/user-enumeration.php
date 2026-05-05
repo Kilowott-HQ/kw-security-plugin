@@ -89,5 +89,7 @@ if ( ! class_exists( 'KW_User_Enumeration' ) ) {
         }
     }
 
-    new KW_User_Enumeration();
+    if ( KW_Security_Settings::is_enabled( 'user_enumeration' ) ) {
+        new KW_User_Enumeration();
+    }
 }
