@@ -60,6 +60,8 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'xmlrpc_pingback'   => true,
                 'security_headers'  => true,
                 'user_enumeration'  => true,
+                'login_rate_limit'  => true,
+                'file_integrity'    => true,
                 'hide_login_url'    => false,
             );
         }
@@ -115,6 +117,14 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'user_enumeration' => array(
                     'label'       => __( 'Block User Enumeration', 'kw-security' ),
                     'description' => __( 'Returns 404 for /?author=N requests by anonymous visitors and requires authentication for the /wp/v2/users REST endpoint, preventing username discovery.', 'kw-security' ),
+                ),
+                'login_rate_limit' => array(
+                    'label'       => __( 'Login Rate Limiting', 'kw-security' ),
+                    'description' => __( 'Locks out an IP address for 1 hour after 5 failed login attempts within 15 minutes. Replaces "Invalid username/password" errors with a generic message so attackers cannot enumerate valid usernames.', 'kw-security' ),
+                ),
+                'file_integrity' => array(
+                    'label'       => __( 'File Integrity Monitoring', 'kw-security' ),
+                    'description' => __( 'Daily WP-Cron scan of the WordPress root directory. Emails the site admin when unknown PHP files appear or when index.php / wp-config.php are modified.', 'kw-security' ),
                 ),
                 'hide_login_url' => array(
                     'label'       => __( 'Hide Login URL', 'kw-security' ),
@@ -188,7 +198,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 );
             }
 
-            // ---- Section 2: Hide Login URL configuration ---------------
+            // ---- Section 2: File Integrity status ----------------------
+            add_settings_section(
+                'kw_security_file_integrity_section',
+                __( 'File Integrity Status', 'kw-security' ),
+                array( $this, 'file_integrity_section_desc' ),
+                self::PAGE_SLUG
+            );
+
+            // ---- Section 3: Hide Login URL configuration ---------------
             add_settings_section(
                 'kw_security_hide_login_section',
                 __( 'Hide Login URL Configuration', 'kw-security' ),
@@ -237,6 +255,48 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             echo '<p>'
                 . esc_html__( 'Enable or disable individual security features. Disabled features have zero runtime cost — their hooks are not registered at all.', 'kw-security' )
                 . '</p>';
+        }
+
+        public function file_integrity_section_desc() {
+            if ( ! self::is_enabled( 'file_integrity' ) ) {
+                echo '<p>' . esc_html__( 'Enable the "File Integrity Monitoring" feature toggle above to activate daily scans.', 'kw-security' ) . '</p>';
+                return;
+            }
+
+            $last_scan  = (int) get_option( 'kw_security_file_last_scan', 0 );
+            $last_label = $last_scan
+                ? sprintf(
+                    /* translators: %s: human-readable time difference */
+                    esc_html__( '%s ago', 'kw-security' ),
+                    human_time_diff( $last_scan, time() )
+                )
+                : esc_html__( 'never (cron will run within 24 hours)', 'kw-security' );
+
+            $admin_email = esc_html( get_option( 'admin_email' ) );
+            ?>
+            <p>
+                <?php
+                /* translators: %1$s: last scan time, %2$s: admin email */
+                echo wp_kses_post( sprintf(
+                    __( 'Last scan: <strong>%1$s</strong>. Alerts are emailed to <code>%2$s</code>.', 'kw-security' ),
+                    esc_html( $last_label ),
+                    $admin_email
+                ) );
+                ?>
+            </p>
+            <p>
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;margin-right:8px;">
+                    <input type="hidden" name="action" value="kw_security_run_scan" />
+                    <?php wp_nonce_field( 'kw_security_run_scan' ); ?>
+                    <?php submit_button( __( 'Run Scan Now', 'kw-security' ), 'secondary', 'submit', false ); ?>
+                </form>
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;" onsubmit="return confirm('<?php echo esc_js( __( 'Reset baseline? Current root files will become the new known-good state. Use only after verifying the site is clean.', 'kw-security' ) ); ?>');">
+                    <input type="hidden" name="action" value="kw_security_reset_baseline" />
+                    <?php wp_nonce_field( 'kw_security_reset_baseline' ); ?>
+                    <?php submit_button( __( 'Reset Baseline', 'kw-security' ), 'secondary', 'submit', false ); ?>
+                </form>
+            </p>
+            <?php
         }
 
         public function hide_login_section_desc() {
@@ -348,6 +408,12 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 <h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
 
                 <?php settings_errors(); ?>
+
+                <?php if ( ! empty( $_GET['kw_scan'] ) ) : ?>
+                    <div class="notice notice-info is-dismissible">
+                        <p><?php echo esc_html( wp_unslash( $_GET['kw_scan'] ) ); ?></p>
+                    </div>
+                <?php endif; ?>
 
                 <?php if ( isset( $_GET['settings-updated'] ) && self::is_enabled( 'hide_login_url' ) ) :
                     $current_url = home_url( '/' . $this->current_login_slug() . '/' ); ?>

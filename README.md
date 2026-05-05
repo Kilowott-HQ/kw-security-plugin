@@ -8,6 +8,8 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 🛡️ **HTTP Security Headers**: X-Frame-Options, CSP, HSTS, Referrer-Policy, Permissions-Policy
 - 🚪 **Hide Login URL**: Replace `/wp-login.php` with a custom slug
 - 👤 **User Enumeration Protection**: Block `?author=N` leaks and gate `/wp/v2/users` REST endpoint
+- 🔐 **Login Rate Limiting**: Lock out IPs after repeated failed login attempts
+- 🔍 **File Integrity Monitoring**: Daily scan of WP root for unknown PHP files and modifications to `index.php` / `wp-config.php`
 - 💬 **Comment Security**: Disables comments, pingbacks, and trackbacks
 - 📁 **File Security**: Prevents dangerous file uploads and disables file editing
 - 🔁 **GitHub Update Notifications**: Surfaces new releases on the WordPress Updates screen
@@ -35,6 +37,8 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | Disable XML-RPC Pingbacks | ON | XML-RPC disable + pingback method removal |
 | HTTP Security Headers | ON | X-Frame-Options, CSP, HSTS, Referrer-Policy, Permissions-Policy |
 | Block User Enumeration | ON | `/?author=N` 404, auth required for `/wp/v2/users` |
+| Login Rate Limiting | ON | 5 failed attempts / 15 min → 1-hour IP lockout; generic "Invalid login credentials" error |
+| File Integrity Monitoring | ON | Daily WP-Cron scan; emails admin on unknown PHP in root or modified `index.php` / `wp-config.php` |
 | Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
 
 > **About "Hide Login URL":** Disabled by default because changing the login URL is a disruptive change that requires bookmarking a custom URL. Enable only when ready, and configure the slug in the same Settings → KW Security page before saving.
@@ -85,6 +89,8 @@ kw-security/
 │   ├── hide-login-url.php              # Custom login URL routing
 │   ├── security-headers.php            # HTTP security headers
 │   ├── user-enumeration.php            # Block user enumeration
+│   ├── login-rate-limiter.php          # Failed-login IP lockout
+│   ├── file-integrity.php              # Daily root-dir scan + email alerts
 │   └── updater.php                     # GitHub-based update checker
 ├── vendor/
 │   └── plugin-update-checker/          # PUC v5.6 library (vendored)
@@ -262,6 +268,13 @@ The update notice should appear under KW Security on the Plugins screen within a
 ---
 
 ## Changelog
+
+### Version 26.05.07
+- **Login Rate Limiting**: locks out IPs for 1 hour after 5 failed attempts within 15 minutes; generic error message prevents username enumeration
+- **File Integrity Monitoring**: daily WP-Cron scan of WP root directory; emails admin when unknown PHP files appear or `index.php`/`wp-config.php` are modified. Manual scan + baseline reset available from Settings → KW Security
+- Auto-reset of integrity baseline after WordPress core updates (avoids false positives on legitimate `index.php` changes)
+- Plugin deactivation now properly clears scheduled cron jobs
+- Both new features address the Preikestolen Basecamp RCA (24 April 2026) findings on brute-force exposure and root-directory file injection
 
 ### Version 26.05.06
 - **Feature toggle system**: every security feature can now be enabled or disabled from **Settings → KW Security**

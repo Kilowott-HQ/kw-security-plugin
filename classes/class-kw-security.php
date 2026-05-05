@@ -78,6 +78,16 @@ if (!class_exists('KW_Security')) {
         }
 
         /**
+         * Plugin deactivation hook — clean up scheduled cron jobs so they
+         * do not continue firing after the plugin is disabled.
+         */
+        public static function plugin_deactivation() {
+            if (class_exists('KW_File_Integrity')) {
+                KW_File_Integrity::deactivation();
+            }
+        }
+
+        /**
          * Strip pingback methods from the XML-RPC server.
          *
          * Defense-in-depth: even with `xmlrpc_enabled` filtered to false,
