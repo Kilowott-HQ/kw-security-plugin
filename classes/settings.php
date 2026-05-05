@@ -418,7 +418,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             <div class="wrap">
                 <h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
 
-                <?php settings_errors(); ?>
+                <?php // WordPress core's options-head.php already calls settings_errors() for pages under Settings menu — calling it here would duplicate the "Settings saved." notice. ?>
 
                 <?php if ( ! empty( $_GET['kw_scan'] ) ) : ?>
                     <div class="notice notice-info is-dismissible">

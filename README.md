@@ -272,6 +272,9 @@ The update notice should appear under KW Security on the Plugins screen within a
 
 ## Changelog
 
+### Version 26.05.10
+- Bug fix: "Settings saved." notice was appearing twice on the KW Security settings page. WordPress core's `options-head.php` already calls `settings_errors()` for pages under the Settings menu, so the explicit call in our render method was duplicating the notice.
+
 ### Version 26.05.09
 - Bug fix: clicking **Save Changes** on Settings → KW Security did nothing because the File Integrity scan/reset buttons were rendered as nested forms inside the main settings form. HTML disallows nested forms, so the browser silently closed the outer form and orphaned the Save button.
 - File Integrity status panel now renders below the settings form instead of inside it.
