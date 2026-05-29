@@ -202,6 +202,7 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             foreach ( self::HASHED_FILES as $relative ) {
                 $full = ABSPATH . $relative;
                 if ( file_exists( $full ) && is_readable( $full ) ) {
+                    // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Belt-and-suspenders: file_exists + is_readable already guard, but @ swallows race-condition warnings if the file disappears between the check and the hash.
                     $hash = @sha1_file( $full );
                     if ( false !== $hash ) {
                         $hashes[ $relative ] = $hash;

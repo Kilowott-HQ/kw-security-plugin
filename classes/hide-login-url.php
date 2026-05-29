@@ -184,6 +184,42 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 		}
 
 		// ----------------------------------------------------------------
+		// Superglobal access helpers
+		// ----------------------------------------------------------------
+
+		/**
+		 * Safely read REQUEST_URI and rawurldecode it for path matching.
+		 *
+		 * Returned string is only used for URL-path parsing (wp_parse_url) and
+		 * strpos comparisons — never echoed to HTML — so output-sanitization
+		 * functions like sanitize_text_field would be inappropriate (they
+		 * could strip characters that affect the routing decision).
+		 *
+		 * @return string
+		 */
+		private function raw_request_uri() {
+			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- URL path used for routing comparisons only, never output.
+			return isset( $_SERVER['REQUEST_URI'] )
+				? rawurldecode( wp_unslash( $_SERVER['REQUEST_URI'] ) )
+				: '';
+		}
+
+		/**
+		 * Safely read QUERY_STRING for re-appending to internal redirect URLs.
+		 *
+		 * The result is concatenated into a URL that is then run through
+		 * esc_url_raw at the wp_safe_redirect call site.
+		 *
+		 * @return string
+		 */
+		private function raw_query_string() {
+			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Re-emitted via esc_url_raw at the redirect call site.
+			return isset( $_SERVER['QUERY_STRING'] )
+				? wp_unslash( $_SERVER['QUERY_STRING'] )
+				: '';
+		}
+
+		// ----------------------------------------------------------------
 		// Core interception — runs at plugins_loaded:9999
 		// ----------------------------------------------------------------
 
@@ -195,40 +231,45 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 		public function plugins_loaded() {
 			global $pagenow;
 
-			$request = parse_url( rawurldecode( $_SERVER['REQUEST_URI'] ) );
+			$request_uri = $this->raw_request_uri();
+			$request     = wp_parse_url( $request_uri );
 
 			// --- Request is for the real wp-login.php (must be hidden) ----
 			if (
-				( strpos( rawurldecode( $_SERVER['REQUEST_URI'] ), 'wp-login.php' ) !== false
+				( strpos( $request_uri, 'wp-login.php' ) !== false
 					|| ( isset( $request['path'] )
 						&& untrailingslashit( $request['path'] ) === site_url( 'wp-login', 'relative' ) ) )
 				&& ! is_admin()
 			) {
-				$this->wp_login_php        = true;
-				$_SERVER['REQUEST_URI']    = $this->user_trailingslashit( '/' . str_repeat( '-/', 10 ) );
-				$pagenow                   = 'index.php';
+				$this->wp_login_php     = true;
+				$_SERVER['REQUEST_URI'] = $this->user_trailingslashit( '/' . str_repeat( '-/', 10 ) );
+				// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Intentional: rewrite $pagenow so the rest of WP treats this as the front page instead of wp-login.php.
+				$pagenow = 'index.php';
 
 			// --- Request is for the custom login slug ----------------------
 			} elseif (
 				( isset( $request['path'] )
 					&& untrailingslashit( $request['path'] ) === home_url( $this->new_login_slug(), 'relative' ) )
+				// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only routing check on a plain-permalink request; no state change.
 				|| ( ! get_option( 'permalink_structure' )
 					&& isset( $_GET[ $this->new_login_slug() ] )
 					&& '' === $_GET[ $this->new_login_slug() ] )
 			) {
 				$_SERVER['SCRIPT_NAME'] = $this->new_login_slug();
-				$pagenow                = 'wp-login.php';
+				// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Intentional: rewrite $pagenow so WP serves the login template at the custom slug.
+				$pagenow = 'wp-login.php';
 
 			// --- Request is for wp-register.php (also hidden) --------------
 			} elseif (
-				( strpos( rawurldecode( $_SERVER['REQUEST_URI'] ), 'wp-register.php' ) !== false
+				( strpos( $request_uri, 'wp-register.php' ) !== false
 					|| ( isset( $request['path'] )
 						&& untrailingslashit( $request['path'] ) === site_url( 'wp-register', 'relative' ) ) )
 				&& ! is_admin()
 			) {
-				$this->wp_login_php        = true;
-				$_SERVER['REQUEST_URI']    = $this->user_trailingslashit( '/' . str_repeat( '-/', 10 ) );
-				$pagenow                   = 'index.php';
+				$this->wp_login_php     = true;
+				$_SERVER['REQUEST_URI'] = $this->user_trailingslashit( '/' . str_repeat( '-/', 10 ) );
+				// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Intentional: rewrite $pagenow so wp-register requests do not expose registration.
+				$pagenow = 'index.php';
 			}
 		}
 
@@ -244,9 +285,11 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 		public function wp_loaded() {
 			global $pagenow;
 
-			$request = parse_url( rawurldecode( $_SERVER['REQUEST_URI'] ) );
+			$request_uri = $this->raw_request_uri();
+			$request     = wp_parse_url( $request_uri );
 
 			// Allow password-protected post form submissions through.
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only routing check; the postpass form itself is nonce-validated by WP core.
 			if ( isset( $_GET['action'] ) && 'postpass' === $_GET['action'] && isset( $_POST['post_password'] ) ) {
 				return;
 			}
@@ -266,6 +309,7 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 			}
 
 			// WooCommerce profile edge-case.
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only routing check for wc-ajax profile redirect.
 			if ( ! is_user_logged_in() && isset( $_GET['wc-ajax'] ) && 'profile.php' === $pagenow ) {
 				wp_safe_redirect( $this->new_redirect_url() );
 				die();
@@ -281,6 +325,8 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 				die;
 			}
 
+			$query_string = $this->raw_query_string();
+
 			// Trailing-slash redirect for custom login URL.
 			if (
 				'wp-login.php' === $pagenow
@@ -288,10 +334,10 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 				&& $request['path'] !== $this->user_trailingslashit( $request['path'] )
 				&& get_option( 'permalink_structure' )
 			) {
-				wp_safe_redirect(
+				wp_safe_redirect( esc_url_raw(
 					$this->user_trailingslashit( $this->new_login_url() )
-					. ( ! empty( $_SERVER['QUERY_STRING'] ) ? '?' . $_SERVER['QUERY_STRING'] : '' )
-				);
+					. ( '' !== $query_string ? '?' . $query_string : '' )
+				) );
 				die;
 
 			// --- Someone hit the real wp-login.php → serve 404 theme ------
@@ -301,11 +347,12 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 				if (
 					( $referer = wp_get_referer() )
 					&& false !== strpos( $referer, 'wp-activate.php' )
-					&& ( $referer = parse_url( $referer ) )
+					&& ( $referer = wp_parse_url( $referer ) )
 					&& ! empty( $referer['query'] )
 				) {
 					parse_str( $referer['query'], $referer );
 
+					// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- ms-functions.php may already be loaded; @ swallows redeclaration notices.
 					@require_once WPINC . '/ms-functions.php';
 
 					if (
@@ -315,10 +362,10 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 						&& ( 'already_active' === $result->get_error_code()
 							|| 'blog_taken' === $result->get_error_code() )
 					) {
-						wp_safe_redirect(
+						wp_safe_redirect( esc_url_raw(
 							$this->new_login_url()
-							. ( ! empty( $_SERVER['QUERY_STRING'] ) ? '?' . $_SERVER['QUERY_STRING'] : '' )
-						);
+							. ( '' !== $query_string ? '?' . $query_string : '' )
+						) );
 						die;
 					}
 				}
@@ -331,8 +378,9 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 
 				global $error, $interim_login, $action, $user_login;
 
-				$redirect_to           = admin_url();
-				$requested_redirect_to = isset( $_REQUEST['redirect_to'] ) ? $_REQUEST['redirect_to'] : '';
+				$redirect_to = admin_url();
+				// phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- redirect_to is passed back to whl_logged_in_redirect filter and wp_safe_redirect which enforces the allowed-hosts allowlist.
+				$requested_redirect_to = isset( $_REQUEST['redirect_to'] ) ? wp_unslash( $_REQUEST['redirect_to'] ) : '';
 
 				if ( is_user_logged_in() ) {
 					$user = wp_get_current_user();
@@ -348,6 +396,7 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 					}
 				}
 
+				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- wp-login.php is being served as the login template via the hidden slug; @ swallows benign output-buffering notices it occasionally emits when self-required.
 				@require_once ABSPATH . 'wp-login.php';
 
 				die;
@@ -423,12 +472,18 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 			}
 
 			// Gravity Forms compatibility.
+			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Cross-plugin compatibility shim; we only inspect $_POST['post_password'] passively to skip URL rewriting when the postpass form is active.
 			if ( isset( $_POST['post_password'] ) ) {
 				global $current_user;
 				if (
 					! is_user_logged_in()
 					&& is_wp_error(
-						wp_authenticate_username_password( null, $current_user->user_login, $_POST['post_password'] )
+						wp_authenticate_username_password(
+							null,
+							$current_user->user_login,
+							// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Passed straight to WP's auth function; passwords must not be altered (any character is valid).
+							$_POST['post_password']
+						)
 					)
 				) {
 					return $origin_url;
@@ -438,6 +493,7 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 			if ( ! is_user_logged_in() ) {
 				if (
 					file_exists( WP_CONTENT_DIR . '/plugins/gravityforms/gravityforms.php' )
+					// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only check for the Gravity Forms entry display query var.
 					&& isset( $_GET['gf_page'] )
 				) {
 					return $origin_url;
@@ -485,11 +541,12 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 		 * Block wp-signup.php and wp-activate.php on non-multisite installs.
 		 */
 		public function init_block_access() {
+			$request_uri = $this->raw_request_uri();
 			if (
 				! is_multisite()
 				&& (
-					false !== strpos( rawurldecode( $_SERVER['REQUEST_URI'] ), 'wp-signup' )
-					|| false !== strpos( rawurldecode( $_SERVER['REQUEST_URI'] ), 'wp-activate' )
+					false !== strpos( $request_uri, 'wp-signup' )
+					|| false !== strpos( $request_uri, 'wp-activate' )
 				)
 			) {
 				wp_die( esc_html__( 'This feature is not enabled.', 'kw-security' ) );
@@ -558,6 +615,7 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 		private function wp_template_loader() {
 			global $pagenow;
 
+			// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Intentional: reset $pagenow so the theme template loader treats this as the front page.
 			$pagenow = 'index.php';
 
 			if ( ! defined( 'WP_USE_THEMES' ) ) {

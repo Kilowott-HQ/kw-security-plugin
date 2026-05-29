@@ -317,14 +317,20 @@ if (!class_exists('KW_Security')) {
             $htaccess_content .= "Deny from all\n";
             $htaccess_content .= "</FilesMatch>\n";
 
-            // Only create if it doesn't exist or if it doesn't contain our rules
+            // Only create if it doesn't exist or if it doesn't contain our rules.
+            // Local filesystem ops are intentional here: writing .htaccess into the uploads
+            // directory at plugin activation. wp_remote_get is for HTTP; WP_Filesystem requires
+            // FTP credentials prompts during activation which would break unattended setups.
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
             if (!file_exists($htaccess_file) || strpos(file_get_contents($htaccess_file), 'KW Security') === false) {
                 // If file exists, append our rules
                 if (file_exists($htaccess_file)) {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
                     $existing_content = file_get_contents($htaccess_file);
                     $htaccess_content = $existing_content . "\n\n" . $htaccess_content;
                 }
-                
+
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
                 file_put_contents($htaccess_file, $htaccess_content);
             }
         }
@@ -337,7 +343,7 @@ if (!class_exists('KW_Security')) {
             global $pagenow;
 
             if ($pagenow === 'edit-comments.php') {
-                wp_redirect(admin_url());
+                wp_safe_redirect(admin_url());
                 exit;
             }
 
