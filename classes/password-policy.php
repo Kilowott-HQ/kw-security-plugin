@@ -148,7 +148,9 @@ if ( ! class_exists( 'KW_Password_Policy' ) ) {
          * @param stdClass      $user    Raw user form data (NOT WP_User).
          */
         public function on_profile_update( $errors, $update, $user ) {
-            $password = isset( $_POST['pass1'] ) ? (string) $_POST['pass1'] : '';
+            // phpcs:ignore WordPress.Security.NonceVerification.Missing -- WP core verifies the user-edit / user-new nonce before firing user_profile_update_errors.
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Passwords must not be sanitized (any character is valid); only unslash is safe.
+            $password = isset( $_POST['pass1'] ) ? (string) wp_unslash( $_POST['pass1'] ) : '';
             if ( '' === $password ) {
                 // Profile saved without changing password.
                 return;
@@ -174,7 +176,9 @@ if ( ! class_exists( 'KW_Password_Policy' ) ) {
          * @param WP_User  $user
          */
         public function on_password_reset( $errors, $user ) {
-            $password = isset( $_POST['pass1'] ) ? (string) $_POST['pass1'] : '';
+            // phpcs:ignore WordPress.Security.NonceVerification.Missing -- WP core verifies the reset-key nonce before firing validate_password_reset.
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Passwords must not be sanitized (any character is valid); only unslash is safe.
+            $password = isset( $_POST['pass1'] ) ? (string) wp_unslash( $_POST['pass1'] ) : '';
             if ( '' === $password ) {
                 return;
             }

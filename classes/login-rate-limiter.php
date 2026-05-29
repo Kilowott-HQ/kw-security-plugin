@@ -54,7 +54,9 @@ if ( ! class_exists( 'KW_Login_Rate_Limiter' ) ) {
          * @return string
          */
         public static function get_client_ip() {
-            $ip = isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '0.0.0.0';
+            $ip = isset( $_SERVER['REMOTE_ADDR'] )
+                ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
+                : '0.0.0.0';
             return apply_filters( 'kw_security_client_ip', $ip );
         }
 

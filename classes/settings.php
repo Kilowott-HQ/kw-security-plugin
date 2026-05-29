@@ -356,7 +356,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     '<code>%s</code> <input id="whl_page" type="text" name="whl_page" value="%s" class="regular-text">%s',
                     esc_html( trailingslashit( home_url() ) ),
                     esc_attr( $value ),
-                    $trailing // already-escaped fragment
+                    wp_kses( $trailing, array( 'code' => array() ) )
                 );
             } else {
                 printf(
@@ -378,7 +378,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     '<code>%s</code> <input id="whl_redirect_admin" type="text" name="whl_redirect_admin" value="%s" class="regular-text">%s',
                     esc_html( trailingslashit( home_url() ) ),
                     esc_attr( $value ),
-                    $trailing
+                    wp_kses( $trailing, array( 'code' => array() ) )
                 );
             } else {
                 printf(
@@ -420,13 +420,17 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
 
                 <?php // WordPress core's options-head.php already calls settings_errors() for pages under Settings menu — calling it here would duplicate the "Settings saved." notice. ?>
 
-                <?php if ( ! empty( $_GET['kw_scan'] ) ) : ?>
+                <?php
+                // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only redirect-back display set by admin-post handler; the underlying handler is nonce-protected via check_admin_referer().
+                if ( ! empty( $_GET['kw_scan'] ) ) : ?>
                     <div class="notice notice-info is-dismissible">
-                        <p><?php echo esc_html( wp_unslash( $_GET['kw_scan'] ) ); ?></p>
+                        <p><?php echo esc_html( sanitize_text_field( wp_unslash( $_GET['kw_scan'] ) ) ); ?></p>
                     </div>
                 <?php endif; ?>
 
-                <?php if ( isset( $_GET['settings-updated'] ) && self::is_enabled( 'hide_login_url' ) ) :
+                <?php
+                // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only display of the standard "settings-updated" flag set by WP core's options.php after its own nonce verification.
+                if ( isset( $_GET['settings-updated'] ) && self::is_enabled( 'hide_login_url' ) ) :
                     $current_url = home_url( '/' . $this->current_login_slug() . '/' ); ?>
                     <div class="notice notice-success is-dismissible">
                         <p>
