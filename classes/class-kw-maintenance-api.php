@@ -185,16 +185,115 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 );
             }
 
-            // ── KW Security module status ────────────────────────────────
-            $fi_last_scan = (int) get_option( 'kw_security_file_last_scan', 0 );
-            $features     = wp_parse_args(
+            // ── KW Security file integrity ───────────────────────────────
+            $fi_last_scan   = (int) get_option( KW_File_Integrity::OPTION_LAST, 0 );
+            $fi_enabled     = KW_Security_Settings::is_enabled( 'file_integrity' );
+            $unknown_files  = array();
+            $modified_files = array();
+
+            if ( $fi_enabled && class_exists( 'KW_File_Integrity' ) ) {
+                // Scan ABSPATH root for unknown executable files.
+                $entries = @scandir( ABSPATH ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                if ( is_array( $entries ) ) {
+                    foreach ( $entries as $name ) {
+                        if ( '.' === $name || '..' === $name ) continue;
+                        if ( ! is_file( ABSPATH . $name ) ) continue;
+                        if ( in_array( $name, KW_File_Integrity::KNOWN_ROOT_FILES, true ) ) continue;
+                        $ext = strtolower( pathinfo( $name, PATHINFO_EXTENSION ) );
+                        if ( in_array( $ext, KW_File_Integrity::SUSPICIOUS_EXTENSIONS, true ) ) {
+                            $unknown_files[] = $name;
+                        }
+                    }
+                }
+
+                // Detect modified tracked files against stored baseline.
+                $baseline = get_option( KW_File_Integrity::OPTION_HASHES, array() );
+                if ( is_array( $baseline ) ) {
+                    foreach ( KW_File_Integrity::HASHED_FILES as $tracked ) {
+                        $full = ABSPATH . $tracked;
+                        if ( file_exists( $full ) && isset( $baseline[ $tracked ] ) ) {
+                            $hash = @sha1_file( $full ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                            if ( false !== $hash && $hash !== $baseline[ $tracked ] ) {
+                                $modified_files[] = $tracked;
+                            }
+                        }
+                    }
+                }
+            }
+
+            $features = wp_parse_args(
                 get_option( KW_Security_Settings::OPTION_NAME, array() ),
                 KW_Security_Settings::get_defaults()
             );
 
             $kw_security = array(
-                'file_integrity_last_scan' => $fi_last_scan ? gmdate( 'c', $fi_last_scan ) : null,
-                'features_enabled'         => array_keys( array_filter( $features ) ),
+                'plugin_version'         => KW_SECURITY_VERSION,
+                'file_integrity_enabled' => $fi_enabled,
+                'last_scan'              => $fi_last_scan ? gmdate( 'c', $fi_last_scan ) : null,
+                'unknown_files'          => $unknown_files,
+                'modified_files'         => $modified_files,
+                'threat_count'           => count( $unknown_files ) + count( $modified_files ),
+                'features_enabled'       => array_keys( array_filter( $features ) ),
+            );
+
+            // ── Wordfence ────────────────────────────────────────────────
+            if ( ! function_exists( 'is_plugin_active' ) ) {
+                require_once ABSPATH . 'wp-admin/includes/plugin.php';
+            }
+
+            $wf_active         = is_plugin_active( 'wordfence/wordfence.php' );
+            $wf_last_scan      = null;
+            $wf_threats        = array();
+            $wf_threat_count   = 0;
+            $wf_critical_count = 0;
+
+            if ( $wf_active ) {
+                global $wpdb;
+                $severity_map  = array( 1 => 'critical', 2 => 'high', 3 => 'medium' );
+
+                // Last scan time from wfConfig.
+                $cfg_table = $wpdb->prefix . 'wfConfig';
+                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $cfg_table ) ) === $cfg_table ) {
+                    $ts = $wpdb->get_var(
+                        $wpdb->prepare( "SELECT val FROM `{$cfg_table}` WHERE name = %s", 'lastScanTime' )
+                    );
+                    if ( $ts ) {
+                        $wf_last_scan = gmdate( 'c', (int) $ts );
+                    }
+                }
+
+                // Unresolved threats (status = 0) severity 1–3 from wfissues.
+                $iss_table = $wpdb->prefix . 'wfissues';
+                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $iss_table ) ) === $iss_table ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                    $rows = $wpdb->get_results(
+                        "SELECT id, severity, type, data, status FROM `{$iss_table}` WHERE status = 0 AND severity <= 3 ORDER BY severity ASC",
+                        ARRAY_A
+                    );
+                    foreach ( (array) $rows as $row ) {
+                        $sev  = isset( $severity_map[ (int) $row['severity'] ] ) ? $severity_map[ (int) $row['severity'] ] : 'medium';
+                        $data = json_decode( isset( $row['data'] ) ? $row['data'] : '{}', true );
+
+                        $wf_threats[] = array(
+                            'id'          => 'wf-' . $row['id'],
+                            'severity'    => $sev,
+                            'type'        => isset( $row['type'] ) ? $row['type'] : 'UNKNOWN',
+                            'description' => isset( $data['shortMsg'] ) ? $data['shortMsg'] : ( isset( $data['description'] ) ? $data['description'] : '' ),
+                            'file'        => isset( $data['file'] ) ? $data['file'] : ( isset( $data['filename'] ) ? $data['filename'] : '' ),
+                            'status'      => 'new',
+                        );
+                        $wf_threat_count++;
+                        if ( 'critical' === $sev ) $wf_critical_count++;
+                    }
+                }
+            }
+
+            $wordfence = array(
+                'plugin_active'         => $wf_active,
+                'last_scan'             => $wf_last_scan,
+                'threats'               => $wf_threats,
+                'threat_count'          => $wf_threat_count,
+                'critical_threat_count' => $wf_critical_count,
             );
 
             return array(
@@ -205,6 +304,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 'php_status'       => $php_status,
                 'plugins'          => $plugins,
                 'kw_security'      => $kw_security,
+                'wordfence'        => $wordfence,
             );
         }
 
