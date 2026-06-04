@@ -52,13 +52,14 @@ if ( ! class_exists( 'KW_Security_Headers' ) ) {
                 //   - frame-ancestors 'self' is the modern equivalent of
                 //     X-Frame-Options: SAMEORIGIN (clickjacking protection).
                 //   - upgrade-insecure-requests auto-rewrites stray http://
-                //     refs to https:// in the browser; safe on HTTPS-only sites.
+                //     refs to https:// in the browser; only safe on HTTPS
+                //     sites — omitted on HTTP to avoid breaking asset loads.
                 // No default-src/script-src/style-src/etc. are set, so
                 // scripts, styles, images, fonts, connections, and embeds
                 // remain unrestricted — nothing that loads today will break.
                 // To harden per-site, override via the kw_security_headers
                 // filter after testing the stricter policy on staging.
-                'Content-Security-Policy' => "upgrade-insecure-requests; frame-ancestors 'self'",
+                'Content-Security-Policy' => ( is_ssl() ? 'upgrade-insecure-requests; ' : '' ) . "frame-ancestors 'self'",
             );
 
             // HSTS only over HTTPS — moderate max-age, no subdomain coverage,
