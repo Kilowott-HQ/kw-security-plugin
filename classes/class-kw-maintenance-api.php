@@ -30,10 +30,14 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         const RATE_LIMIT    = 20;
         const RATE_WINDOW   = 3600;
 
-        // PHP EOL/support status — update annually.
-        private static $php_supported = array( '8.4', '8.3', '8.2' );
-        private static $php_outdated  = array( '8.1' );
-        // anything else is eol
+        // PHP support status — update annually.
+        // supported = current stable, active support.
+        // outdated  = security-only support, upgrade recommended.
+        // eol       = no patches at all, upgrade urgently.
+        // Last reviewed: June 2026. Next review: Jan 2027.
+        private static $php_supported = array( '8.4' );
+        private static $php_outdated  = array( '8.3', '8.2' );
+        // 8.1 and below are eol
 
         // ----------------------------------------------------------------
         // Bootstrap
@@ -150,6 +154,10 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
             // ── Plugins ──────────────────────────────────────────────────
             $all_plugins      = get_plugins();
             $update_transient = get_site_transient( 'update_plugins' );
+            // Transient may not exist yet if WP hasn't run an update check.
+            $update_response  = ( $update_transient && isset( $update_transient->response ) )
+                ? $update_transient->response
+                : array();
             $plugins          = array();
 
             foreach ( $all_plugins as $plugin_file => $plugin_data ) {
@@ -162,8 +170,8 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 $update_available = false;
                 $is_security      = false;
 
-                if ( isset( $update_transient->response[ $plugin_file ]->new_version ) ) {
-                    $update_obj       = $update_transient->response[ $plugin_file ];
+                if ( isset( $update_response[ $plugin_file ]->new_version ) ) {
+                    $update_obj       = $update_response[ $plugin_file ];
                     $latest_ver       = $update_obj->new_version;
                     $update_available = ( $latest_ver !== $installed_ver );
 
@@ -255,19 +263,31 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 require_once ABSPATH . 'wp-admin/includes/plugin.php';
             }
 
-            $wf_active         = is_plugin_active( 'wordfence/wordfence.php' );
-            $wf_last_scan      = null;
-            $wf_threats        = array();
-            $wf_threat_count   = 0;
-            $wf_critical_count = 0;
-            $wf_api_error      = null;
+            $wf_active        = is_plugin_active( 'wordfence/wordfence.php' );
+            $wf_last_scan     = null;
+            $wf_threats       = array();
+            $wf_threat_count  = 0;
+            $wf_severe_count  = 0;  // actual malware / backdoors / compromised files
+            $wf_api_error     = null;
 
             if ( $wf_active ) {
                 // Severity: Wordfence uses 0/25/50/75/100 — map to our labels.
+                // Plugin/theme upgrade notices inherit their Wordfence severity.
+                // Actual compromise types (malware, backdoors, modified core files)
+                // are escalated to 'severe' regardless of Wordfence's numeric level.
                 $severity_map = array(
                     100 => 'critical',
                     75  => 'high',
                     50  => 'medium',
+                );
+
+                // Types that indicate an active site compromise — always 'severe'.
+                $severe_types = array(
+                    'INFECTED_FILE',
+                    'BACKDOOR',
+                    'BACKDOOR_OBFUSCATED',
+                    'FILE_CHANGED',
+                    'UNKNOWN_FILE',
                 );
 
                 try {
@@ -292,14 +312,18 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                         $new_issues = isset( $result['new'] ) ? (array) $result['new'] : array();
 
                         foreach ( $new_issues as $issue ) {
-                            $sev_int = (int) ( isset( $issue['severity'] ) ? $issue['severity'] : 0 );
+                            $sev_int  = (int) ( isset( $issue['severity'] ) ? $issue['severity'] : 0 );
+                            $iss_type = isset( $issue['type'] ) ? $issue['type'] : '';
 
-                            // Skip low (25) and info/none (0) — too noisy for dashboard.
-                            if ( ! isset( $severity_map[ $sev_int ] ) ) {
+                            // Actual compromise types override Wordfence's numeric severity.
+                            if ( in_array( $iss_type, $severe_types, true ) ) {
+                                $sev_str = 'severe';
+                            } elseif ( isset( $severity_map[ $sev_int ] ) ) {
+                                $sev_str = $severity_map[ $sev_int ];
+                            } else {
+                                // Skip low (25) and info/none (0) — too noisy for dashboard.
                                 continue;
                             }
-
-                            $sev_str = $severity_map[ $sev_int ];
 
                             // 'data' is already unserialized by getIssues().
                             // v8 _hydrateIssue() prefers 'realFile'; v7 uses 'file'.
@@ -325,8 +349,8 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                                 'status'      => 'new',
                             );
                             $wf_threat_count++;
-                            if ( 'critical' === $sev_str ) {
-                                $wf_critical_count++;
+                            if ( 'severe' === $sev_str ) {
+                                $wf_severe_count++;
                             }
                         }
 
@@ -349,12 +373,12 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
             }
 
             $wordfence = array(
-                'plugin_active'         => $wf_active,
-                'last_scan'             => $wf_last_scan,
-                'threats'               => $wf_threats,
-                'threat_count'          => $wf_threat_count,
-                'critical_threat_count' => $wf_critical_count,
-                'api_error'             => $wf_api_error,
+                'plugin_active'        => $wf_active,
+                'last_scan'            => $wf_last_scan,
+                'threats'              => $wf_threats,
+                'threat_count'         => $wf_threat_count,
+                'severe_threat_count'  => $wf_severe_count,
+                'api_error'            => $wf_api_error,
             );
 
             return array(
