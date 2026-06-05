@@ -236,7 +236,21 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 'features_enabled'       => array_keys( array_filter( $features ) ),
             );
 
-            // ── Wordfence ────────────────────────────────────────────────
+            // ── Wordfence (via plugin's own class API) ───────────────────
+            //
+            // Uses wfConfig::get() and wfIssues::shared() rather than raw
+            // SQL so Wordfence's own schema changes are handled internally.
+            //
+            // Severity constants (stable across v7 + v8):
+            //   SEVERITY_CRITICAL = 100, SEVERITY_HIGH = 75, SEVERITY_MEDIUM = 50
+            //   SEVERITY_LOW = 25, SEVERITY_NONE = 0
+            //
+            // Status strings (stable across v7 + v8):
+            //   'new' | 'ignoreP' | 'ignoreC'
+            //
+            // If wfIssues API changes in a future version the catch() below
+            // sets wf_api_error so the scanner logs a visible warning instead
+            // of silently showing zero threats.
             if ( ! function_exists( 'is_plugin_active' ) ) {
                 require_once ABSPATH . 'wp-admin/includes/plugin.php';
             }
@@ -246,45 +260,91 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
             $wf_threats        = array();
             $wf_threat_count   = 0;
             $wf_critical_count = 0;
+            $wf_api_error      = null;
 
             if ( $wf_active ) {
-                global $wpdb;
-                $severity_map  = array( 1 => 'critical', 2 => 'high', 3 => 'medium' );
+                // Severity: Wordfence uses 0/25/50/75/100 — map to our labels.
+                $severity_map = array(
+                    100 => 'critical',
+                    75  => 'high',
+                    50  => 'medium',
+                );
 
-                // Last scan time from wfConfig.
-                $cfg_table = $wpdb->prefix . 'wfConfig';
-                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $cfg_table ) ) === $cfg_table ) {
-                    $ts = $wpdb->get_var(
-                        $wpdb->prepare( "SELECT val FROM `{$cfg_table}` WHERE name = %s", 'lastScanTime' )
-                    );
-                    if ( $ts ) {
-                        $wf_last_scan = gmdate( 'c', (int) $ts );
+                try {
+                    // ── Last scan time via wfConfig ──────────────────────
+                    // 'wf_scanLastStatusTime' is set by wfIssues::updateScanStillRunning()
+                    // on every scan tick — confirmed present in both v7.4 and v8.2.
+                    if ( class_exists( 'wfConfig' ) ) {
+                        $ts = (int) wfConfig::get( 'wf_scanLastStatusTime', 0 );
+                        if ( $ts > 0 ) {
+                            $wf_last_scan = gmdate( 'c', $ts );
+                        }
                     }
-                }
 
-                // Unresolved threats (status = 0) severity 1–3 from wfissues.
-                $iss_table = $wpdb->prefix . 'wfissues';
-                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $iss_table ) ) === $iss_table ) {
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                    $rows = $wpdb->get_results(
-                        "SELECT id, severity, type, data, status FROM `{$iss_table}` WHERE status = 0 AND severity <= 3 ORDER BY severity ASC",
-                        ARRAY_A
-                    );
-                    foreach ( (array) $rows as $row ) {
-                        $sev  = isset( $severity_map[ (int) $row['severity'] ] ) ? $severity_map[ (int) $row['severity'] ] : 'medium';
-                        $data = json_decode( isset( $row['data'] ) ? $row['data'] : '{}', true );
+                    // ── Issues via wfIssues::shared() ───────────────────
+                    // getIssues() return shape is stable across v7 + v8:
+                    //   array( 'new' => [ [...issue], ... ], 'ignored' => [...] )
+                    // Each issue is an array; 'data' is already unserialized.
+                    // Pass ignoredLimit = 0 to skip fetching ignored issues.
+                    if ( class_exists( 'wfIssues' ) && method_exists( 'wfIssues', 'shared' ) ) {
+                        $wf_obj     = wfIssues::shared();
+                        $result     = $wf_obj->getIssues( 0, 100, 0, 0 );
+                        $new_issues = isset( $result['new'] ) ? (array) $result['new'] : array();
 
-                        $wf_threats[] = array(
-                            'id'          => 'wf-' . $row['id'],
-                            'severity'    => $sev,
-                            'type'        => isset( $row['type'] ) ? $row['type'] : 'UNKNOWN',
-                            'description' => isset( $data['shortMsg'] ) ? $data['shortMsg'] : ( isset( $data['description'] ) ? $data['description'] : '' ),
-                            'file'        => isset( $data['file'] ) ? $data['file'] : ( isset( $data['filename'] ) ? $data['filename'] : '' ),
-                            'status'      => 'new',
-                        );
-                        $wf_threat_count++;
-                        if ( 'critical' === $sev ) $wf_critical_count++;
+                        foreach ( $new_issues as $issue ) {
+                            $sev_int = (int) ( isset( $issue['severity'] ) ? $issue['severity'] : 0 );
+
+                            // Skip low (25) and info/none (0) — too noisy for dashboard.
+                            if ( ! isset( $severity_map[ $sev_int ] ) ) {
+                                continue;
+                            }
+
+                            $sev_str = $severity_map[ $sev_int ];
+
+                            // 'data' is already unserialized by getIssues().
+                            // v8 _hydrateIssue() prefers 'realFile'; v7 uses 'file'.
+                            $data = isset( $issue['data'] ) && is_array( $issue['data'] )
+                                ? $issue['data']
+                                : array();
+
+                            $file = '';
+                            if ( ! empty( $data['realFile'] ) ) {
+                                $file = $data['realFile'];
+                            } elseif ( ! empty( $data['file'] ) ) {
+                                $file = $data['file'];
+                            } elseif ( ! empty( $data['filename'] ) ) {
+                                $file = $data['filename'];
+                            }
+
+                            $wf_threats[] = array(
+                                'id'          => 'wf-' . ( isset( $issue['id'] ) ? $issue['id'] : uniqid() ),
+                                'severity'    => $sev_str,
+                                'type'        => isset( $issue['type'] ) ? $issue['type'] : 'UNKNOWN',
+                                'description' => isset( $issue['shortMsg'] ) ? $issue['shortMsg'] : '',
+                                'file'        => $file,
+                                'status'      => 'new',
+                            );
+                            $wf_threat_count++;
+                            if ( 'critical' === $sev_str ) {
+                                $wf_critical_count++;
+                            }
+                        }
+
+                        // Fallback: if wf_scanLastStatusTime was 0 (scan complete
+                        // but status ticker already cleared) derive time from the
+                        // most recently updated issue instead.
+                        if ( ! $wf_last_scan && method_exists( $wf_obj, 'getLastIssueUpdateTimestamp' ) ) {
+                            $last_ts = (int) $wf_obj->getLastIssueUpdateTimestamp();
+                            if ( $last_ts > 0 ) {
+                                $wf_last_scan = gmdate( 'c', $last_ts );
+                            }
+                        }
                     }
+                } catch ( \Throwable $e ) {
+                    // Wordfence API changed — surface the error so the scanner
+                    // logs a visible warning rather than silently showing zero threats.
+                    $wf_api_error = $e->getMessage();
+                    error_log( '[kw-maintenance-api] wfIssues API error: ' . $e->getMessage() );
                 }
             }
 
@@ -294,6 +354,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 'threats'               => $wf_threats,
                 'threat_count'          => $wf_threat_count,
                 'critical_threat_count' => $wf_critical_count,
+                'api_error'             => $wf_api_error,
             );
 
             return array(
