@@ -82,6 +82,67 @@ if (!class_exists('KW_Security')) {
                 $instance = new self();
                 $instance->setup_upload_protection();
             }
+
+            // Phase 6-WP: register with the Kilowott scanner so it can deliver
+            // a per-site API key on its next run (no manual key entry required).
+            self::auto_register_site();
+        }
+
+        /**
+         * Phase 6-WP: register this site with the Kilowott maintenance scanner.
+         *
+         * Fetches the discovery document to find the current registration endpoint
+         * (indirection allows the endpoint URL to change without a plugin update),
+         * then POSTs the site URL. The scanner will deliver a per-site key via the
+         * /set-key REST endpoint on its next run.
+         *
+         * Registration is idempotent — re-activation is a no-op at the API level,
+         * but we track a local flag to skip the network round-trip on re-activation.
+         * Failure is intentionally silent (non-fatal).
+         */
+        public static function auto_register_site() {
+            // Already registered — skip the round-trip on re-activation.
+            if ( get_option( 'kw_auto_registered' ) ) {
+                return;
+            }
+
+            // Fetch discovery document to find the current registration URL.
+            if ( ! defined( 'KW_DISCOVERY_URL' ) ) {
+                return;
+            }
+
+            $discovery = wp_remote_get( KW_DISCOVERY_URL, array(
+                'timeout'   => 10,
+                'sslverify' => true,
+            ) );
+
+            if ( is_wp_error( $discovery ) ) {
+                return;
+            }
+
+            $config       = json_decode( wp_remote_retrieve_body( $discovery ), true );
+            $register_url = isset( $config['register_url'] ) ? $config['register_url'] : null;
+
+            if ( ! $register_url || ! filter_var( $register_url, FILTER_VALIDATE_URL ) ) {
+                return;
+            }
+
+            // POST registration — no auth needed, no secret in the request.
+            $response = wp_remote_post( $register_url, array(
+                'timeout' => 10,
+                'headers' => array( 'Content-Type' => 'application/json' ),
+                'body'    => wp_json_encode( array(
+                    'site_url'       => home_url(),
+                    'plugin_version' => KW_SECURITY_VERSION,
+                ) ),
+            ) );
+
+            if ( is_wp_error( $response ) ) {
+                return;
+            }
+
+            // Mark locally so re-activation skips the round-trip.
+            update_option( 'kw_auto_registered', '1', false );
         }
 
         /**

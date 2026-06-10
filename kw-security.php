@@ -22,6 +22,24 @@ define('KW_SECURITY_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('KW_SECURITY_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('KW_SECURITY_PLUGIN_FILE', __FILE__);
 
+// Phase 6-WP: auto-registration.
+// KW_DISCOVERY_URL points to the Kilowott registration endpoint discovery doc.
+// Returns { register_url, version } so the endpoint can move without a plugin update.
+define('KW_DISCOVERY_URL', 'https://ftvvgxirlfyzgsnaovvz.supabase.co/functions/v1/wp-register');
+
+// RSA-2048 public key used to verify key-delivery requests from the Kilowott scanner.
+// The scanner signs with the corresponding private key (never distributed).
+// Safe to publish: a public key can verify signatures but cannot forge them.
+define('KW_DELIVERY_PUBLIC_KEY', '-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA03r6DkadKTfshfw5Evfv
+zdUE4318hMnmd+d8XMxBLC5hhqV8m9hNoqnrpBMY8Fzo6OpTSVGbZ5LDFT89Bq7e
+MyeaDFZhJdTRMM2RsuFPZJCnZS6zlI2OKwkP3tWjzDxCwY8M7ZQHSE5ndgM4rBm3
+8LTYnzQKIzYMVYbxmJfz5oqr4p5g43u44EQZCEtmDWmw+EtlLTrirosbAF3UFxi8
+Wbs9Tai2j60IgQp+G6Q8ZYL5fsMXioCR10tjInltI9qRYvwBV+5bDKHcpD7ix/Xm
+cQo6ScfVo5YV81giSkyfhiMaFLGOEP2NQ0DQo11BkKuyA0O3piLQcrPyTYxNXMbl
+nQIDAQAB
+-----END PUBLIC KEY-----');
+
 register_activation_hook(__FILE__, array('KW_Security', 'plugin_activation'));
 register_deactivation_hook(__FILE__, array('KW_Security', 'plugin_deactivation'));
 

@@ -27,8 +27,10 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         const OPTION_KEY    = 'kw_maintenance_key';
         const API_NAMESPACE = 'kw-security/v1';
         const ROUTE         = '/site-status';
+        const ROUTE_SET_KEY = '/set-key';
         const RATE_LIMIT    = 20;
         const RATE_WINDOW   = 3600;
+        const KEY_TS_WINDOW = 300; // seconds — reject deliveries older than 5 min
 
         // PHP support status — update annually.
         // supported = current stable, active support.
@@ -50,6 +52,53 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 'permission_callback' => array( __CLASS__, 'authenticate' ),
             ) );
         }
+
+        // Registered unconditionally — needed to receive the initial key delivery
+        // before maintenance_api is enabled. RSA verification (not the stored key)
+        // protects this endpoint.
+        public static function init_set_key() {
+            register_rest_route( self::API_NAMESPACE, self::ROUTE_SET_KEY, array(
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => array( __CLASS__, 'handle_set_key' ),
+                'permission_callback' => '__return_true',
+            ) );
+        }
+
+        public static function handle_set_key( WP_REST_Request $request ) {
+            $key = sanitize_text_field( $request->get_param( 'key' ) );
+            $sig = $request->get_param( 'sig' );  // base64-encoded RSA signature
+            $ts  = (int) $request->get_param( 'ts' );
+
+            if ( ! $key || ! $sig || ! $ts ) {
+                return new WP_Error( 'bad_request', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            // Reject stale deliveries — prevents replay attacks.
+            if ( abs( time() - $ts ) > self::KEY_TS_WINDOW ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            // Verify RSA-2048 / SHA-256 signature from the Kilowott scanner.
+            // KW_DELIVERY_PUBLIC_KEY is the scanner's public key (safe to ship publicly).
+            if ( ! defined( 'KW_DELIVERY_PUBLIC_KEY' ) ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+            $message   = $key . '|' . (string) $ts;
+            $sig_bytes = base64_decode( $sig, true );
+            if ( false === $sig_bytes ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+            $pub = openssl_get_publickey( KW_DELIVERY_PUBLIC_KEY );
+            if ( false === $pub || 1 !== openssl_verify( $message, $sig_bytes, $pub, OPENSSL_ALGO_SHA256 ) ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            // Signature valid — store the per-site key.
+            update_option( self::OPTION_KEY, $key, false );
+
+            return new WP_REST_Response( array( 'ok' => true ), 200 );
+        }
+
 
         // ----------------------------------------------------------------
         // Auth + security checks (permission_callback)
@@ -408,4 +457,8 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
     if ( KW_Security_Settings::is_enabled( 'maintenance_api' ) ) {
         add_action( 'rest_api_init', array( 'KW_Maintenance_API', 'init' ) );
     }
+
+    // set-key is always registered — needed to receive the first key delivery
+    // even before the maintenance API feature flag is turned on.
+    add_action( 'rest_api_init', array( 'KW_Maintenance_API', 'init_set_key' ) );
 }

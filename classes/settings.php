@@ -64,7 +64,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'file_integrity'    => true,
                 'password_policy'   => true,
                 'hide_login_url'    => false,
-                'maintenance_api'   => false,
+                'maintenance_api'   => true,
             );
         }
 
@@ -138,7 +138,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'maintenance_api' => array(
                     'label'       => __( 'Maintenance API', 'kw-security' ),
-                    'description' => __( 'Exposes a read-only REST endpoint (<code>/wp-json/kw-security/v1/site-status</code>) used by the Kilowott maintenance agent to fetch WordPress version, PHP version, and plugin update status. <strong>Off by default</strong> — enable only after setting an API key in the Maintenance API section below.', 'kw-security' ),
+                    'description' => __( 'Exposes a read-only REST endpoint (<code>/wp-json/kw-security/v1/site-status</code>) used by the Kilowott maintenance agent to fetch WordPress version, PHP version, and plugin update status. Enabled by default — the endpoint requires a Bearer key and is rate-limited to 20 req/hour.', 'kw-security' ),
                 ),
             );
         }
