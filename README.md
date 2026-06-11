@@ -14,6 +14,8 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 💬 **Comment Security**: Disables comments, pingbacks, and trackbacks
 - 📁 **File Security**: Prevents dangerous file uploads and disables file editing
 - 🔁 **GitHub Update Notifications**: Surfaces new releases on the WordPress Updates screen
+- 🔧 **Maintenance API**: Read-only REST endpoint for the Kilowott maintenance agent to query site health (WP/PHP version, plugin update status), gated by a Bearer key
+- 🌐 **Nginx Upload Protection**: Server-aware file security — skips the ineffective `.htaccess` on Nginx/OpenResty and shows an admin notice with the equivalent Nginx location block
 - ⚙️ **Feature Toggles**: Every feature can be enabled or disabled per site from **Settings → KW Security**
 
 ## Installation
@@ -42,6 +44,7 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | File Integrity Monitoring | ON | Daily WP-Cron scan; emails admin on unknown PHP in root or modified `index.php` / `wp-config.php` |
 | Strong Password Policy (Admins) | ON | Requires 12+ chars with upper, lower, digit, and symbol when creating/updating administrator passwords |
 | Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
+| Maintenance API | ON | Read-only REST endpoint (`/wp-json/kw-security/v1/site-status`) used by the Kilowott maintenance agent; gated by `Authorization: Bearer <key>`, rate-limited to 20 req/hour |
 
 > **About "Hide Login URL":** Disabled by default because changing the login URL is a disruptive change that requires bookmarking a custom URL. Enable only when ready, and configure the slug in the same Settings → KW Security page before saving.
 
@@ -94,6 +97,7 @@ kw-security/
 │   ├── login-rate-limiter.php          # Failed-login IP lockout
 │   ├── file-integrity.php              # Daily root-dir scan + email alerts
 │   ├── password-policy.php             # Strong password enforcement (admin role)
+│   ├── class-kw-maintenance-api.php    # Maintenance REST API (site-status + set-key endpoints)
 │   └── updater.php                     # GitHub-based update checker
 ├── vendor/
 │   └── plugin-update-checker/          # PUC v5.6 library (vendored)
@@ -271,6 +275,12 @@ The update notice should appear under KW Security on the Plugins screen within a
 ---
 
 ## Changelog
+
+### Version 26.06.01
+- **Maintenance API**: new read-only REST endpoint (`/wp-json/kw-security/v1/site-status`) for the Kilowott maintenance agent — returns WP version, PHP version, and plugin update status; gated by `Authorization: Bearer <key>` (timing-safe comparison), HTTPS-enforced, rate-limited to 20 req/hour per IP
+- **Auto-registration**: on plugin activation the site registers with the Kilowott maintenance scanner via a discovery document; the scanner delivers a per-site API key via the signed `/set-key` endpoint (RSA-2048/SHA-256); no manual key entry required on the client site
+- **Nginx upload protection**: file-security `.htaccess` write is now server-aware — on Nginx/OpenResty (which ignores `.htaccess`) the write is skipped and a dismissible admin notice surfaces the equivalent Nginx location block to add to the server config; Apache/LiteSpeed behaviour unchanged
+- **Maintenance API settings section**: new section in Settings → KW Security showing the active endpoint URL, API key field, and a Generate Key button; also adds the `Maintenance API` feature toggle (enabled by default)
 
 ### Version 26.05.10
 - Bug fix: "Settings saved." notice was appearing twice on the KW Security settings page. WordPress core's `options-head.php` already calls `settings_errors()` for pages under the Settings menu, so the explicit call in our render method was duplicating the notice.
