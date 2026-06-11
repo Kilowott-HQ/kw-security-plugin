@@ -1,0 +1,188 @@
+name: Release
+
+# Manual-trigger release workflow.
+#
+# What it does:
+#   1. Resolves a version (input or auto-computed next YY.MM.NN for current month)
+#   2. Runs `php -l` on every PHP file we ship
+#   3. Bumps Version: header + KW_SECURITY_VERSION constant in kw-security.php
+#   4. Commits the bump back to main (with [skip ci] so this doesn't loop)
+#   5. Builds kw-security.zip with root folder "kw-security" (required by PUC)
+#   6. Tags + creates a GitHub Release with auto-generated notes from commits
+#      since the previous tag, with kw-security.zip attached
+#
+# Trigger: Actions tab → Release → "Run workflow"
+#   - version (optional): override the auto-computed YY.MM.NN
+#   - dry_run (optional): compute + build + lint, but don't push/tag/release
+#
+# Branch protection note: this workflow pushes directly to main. If main has
+# protection requiring PR review, the github-actions[bot] needs a bypass rule,
+# or replace the push step with a PR-and-auto-merge dance.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (YY.MM.NN). Leave blank to auto-compute next NN for current month."
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run (lint + build only, no push/tag/release)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main with full history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # Need a token that can push back. Default GITHUB_TOKEN is fine
+          # unless branch protection blocks the bot.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: PHP syntax check
+        run: |
+          php --version
+          for f in kw-security.php classes/*.php; do
+            php -l "$f"
+          done
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+            echo "Using supplied version: $VERSION"
+          else
+            YEAR=$(date -u +%y)
+            MONTH=$(date -u +%m)
+            PREFIX="${YEAR}.${MONTH}."
+            LATEST_NN=$(git tag --list "${PREFIX}*" --sort=-version:refname | head -n1 | sed "s/^${PREFIX}//")
+            if [ -z "$LATEST_NN" ]; then
+              NN="01"
+            else
+              # 10# forces base-10 (avoids "08" being treated as octal)
+              NN=$(printf "%02d" $((10#$LATEST_NN + 1)))
+            fi
+            VERSION="${PREFIX}${NN}"
+            echo "Auto-computed version: $VERSION"
+          fi
+
+          # Validate format
+          if ! echo "$VERSION" | grep -qE "^[0-9]{2}\.[0-9]{2}\.[0-9]{2}$"; then
+            echo "::error::Invalid version format: $VERSION (expected YY.MM.NN, e.g. 26.06.01)"
+            exit 1
+          fi
+
+          # Refuse to overwrite an existing tag
+          if git rev-parse "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag $VERSION already exists. Refusing to overwrite."
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in kw-security.php
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          sed -i -E "s#^  Version: .*#  Version: ${V}#" kw-security.php
+          sed -i -E "s#define\('KW_SECURITY_VERSION', '[^']+'\)#define('KW_SECURITY_VERSION', '${V}')#" kw-security.php
+
+          echo "Version lines after bump:"
+          grep -nE "Version:|KW_SECURITY_VERSION" kw-security.php
+
+          # Sanity check — both lines must now contain the new version
+          if ! grep -q "Version: ${V}" kw-security.php; then
+            echo "::error::Failed to bump 'Version:' header"
+            exit 1
+          fi
+          if ! grep -q "KW_SECURITY_VERSION', '${V}'" kw-security.php; then
+            echo "::error::Failed to bump KW_SECURITY_VERSION constant"
+            exit 1
+          fi
+
+      - name: Build kw-security.zip
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          STAGE="$RUNNER_TEMP/stage"
+          mkdir -p "$STAGE/kw-security"
+
+          # Mirror the working tree into a folder named exactly "kw-security"
+          # so PUC drops it into wp-content/plugins/kw-security/ on update.
+          rsync -a \
+            --exclude=".git" \
+            --exclude=".github" \
+            --exclude=".gitignore" \
+            --exclude=".gitattributes" \
+            --exclude=".editorconfig" \
+            --exclude=".DS_Store" \
+            --exclude="node_modules" \
+            --exclude="*.zip" \
+            ./ "$STAGE/kw-security/"
+
+          cd "$STAGE"
+          zip -rq "$GITHUB_WORKSPACE/kw-security.zip" kw-security
+          echo "Built:"
+          ls -lh "$GITHUB_WORKSPACE/kw-security.zip"
+          echo "Top-level contents:"
+          unzip -l "$GITHUB_WORKSPACE/kw-security.zip" | head -20
+
+      - name: Upload zip as workflow artifact (for dry-run inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kw-security-${{ steps.version.outputs.version }}
+          path: kw-security.zip
+          retention-days: 14
+
+      - name: Dry run — stop before push
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "::notice::Dry run complete. Version: ${{ steps.version.outputs.version }}"
+          echo "::notice::Zip is available as the workflow artifact above. No commit, tag, or release created."
+          exit 0
+
+      - name: Commit version bump back to main
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add kw-security.php
+          # [skip ci] prevents this commit from re-triggering any push-based workflows
+          git commit -m "chore: bump version to ${V} [skip ci]"
+          git push origin main
+
+      - name: Create and push tag
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          git tag "$V"
+          git push origin "$V"
+
+      - name: Create GitHub Release with zip asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          gh release create "$V" \
+            --title "$V" \
+            --generate-notes \
+            "kw-security.zip"
+          echo "::notice::Release $V published. PUC-enabled sites will see the update on their next poll (~12h)."
