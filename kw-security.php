@@ -3,7 +3,7 @@
   Plugin Name: KW Security
   Description: WordPress security enhancements and controlled updates.
   Plugin URI: https://kilowott.com/
-  Version: 26.05.10
+  Version: 26.06.01
   Author: KW Development
   Author URI: https://kilowott.com/
  */
@@ -15,7 +15,7 @@ if (!function_exists('add_action') || !defined('ABSPATH')) {
 }
 
 define('KW_SECURITY_NAME', 'KW Security');
-define('KW_SECURITY_VERSION', '26.05.10');
+define('KW_SECURITY_VERSION', '26.06.01');
 define('KW_SECURITY_SLUG', 'kw-security');
 define('KW_SECURITY_MINIMUM_WP_VERSION', '5.0');
 define('KW_SECURITY_PLUGIN_DIR', plugin_dir_path(__FILE__));
