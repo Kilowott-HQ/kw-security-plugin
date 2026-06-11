@@ -64,6 +64,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'file_integrity'    => true,
                 'password_policy'   => true,
                 'hide_login_url'    => false,
+                'maintenance_api'   => true,
             );
         }
 
@@ -135,6 +136,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     'label'       => __( 'Hide Login URL', 'kw-security' ),
                     'description' => __( 'Replaces /wp-login.php and /wp-admin with a custom slug. <strong>Off by default</strong> — bookmark your custom URL before saving, or you may lock yourself out. Configure the slug below.', 'kw-security' ),
                 ),
+                'maintenance_api' => array(
+                    'label'       => __( 'Maintenance API', 'kw-security' ),
+                    'description' => __( 'Exposes a read-only REST endpoint (<code>/wp-json/kw-security/v1/site-status</code>) used by the Kilowott maintenance agent to fetch WordPress version, PHP version, and plugin update status. Enabled by default — the endpoint requires a Bearer key and is rate-limited to 20 req/hour.', 'kw-security' ),
+                ),
             );
         }
 
@@ -179,6 +184,13 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             // backward compatibility with sites that already have these set.
             register_setting( self::SETTINGS_GROUP, 'whl_page',           'sanitize_title_with_dashes' );
             register_setting( self::SETTINGS_GROUP, 'whl_redirect_admin', 'sanitize_title_with_dashes' );
+
+            // Maintenance API key — stored as a plain string.
+            register_setting( self::SETTINGS_GROUP, KW_Maintenance_API::OPTION_KEY, array(
+                'type'              => 'string',
+                'sanitize_callback' => 'sanitize_text_field',
+                'default'           => '',
+            ) );
 
             // ---- Section 1: Feature toggles ----------------------------
             add_settings_section(
@@ -229,6 +241,22 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 array( $this, 'render_whl_redirect' ),
                 self::PAGE_SLUG,
                 'kw_security_hide_login_section'
+            );
+
+            // ---- Section 3: Maintenance API ----------------------------
+            add_settings_section(
+                'kw_security_maintenance_section',
+                __( 'Maintenance API', 'kw-security' ),
+                array( $this, 'maintenance_section_desc' ),
+                self::PAGE_SLUG
+            );
+
+            add_settings_field(
+                KW_Maintenance_API::OPTION_KEY,
+                '<label for="kw_maintenance_key">' . esc_html__( 'API Key', 'kw-security' ) . '</label>',
+                array( $this, 'render_maintenance_key' ),
+                self::PAGE_SLUG,
+                'kw_security_maintenance_section'
             );
         }
 
@@ -348,6 +376,47 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             <?php
         }
 
+        public function maintenance_section_desc() {
+            if ( ! self::is_enabled( 'maintenance_api' ) ) {
+                echo '<p><em>'
+                    . esc_html__( 'The Maintenance API is currently disabled. Enable the toggle above and save to activate the endpoint.', 'kw-security' )
+                    . '</em></p>';
+                return;
+            }
+            $endpoint = home_url( '/wp-json/kw-security/v1/site-status' );
+            echo '<p>'
+                . esc_html__( 'Endpoint is active. The key is sent via the Authorization: Bearer header — never in the URL.', 'kw-security' )
+                . '</p>';
+            echo '<p>'
+                . esc_html__( 'Endpoint: ', 'kw-security' )
+                . '<code>' . esc_html( $endpoint ) . '</code>'
+                . '</p>';
+        }
+
+        public function render_maintenance_key() {
+            $key = get_option( KW_Maintenance_API::OPTION_KEY, '' );
+            ?>
+            <input
+                type="text"
+                id="kw_maintenance_key"
+                name="<?php echo esc_attr( KW_Maintenance_API::OPTION_KEY ); ?>"
+                value="<?php echo esc_attr( $key ); ?>"
+                class="regular-text"
+                autocomplete="off"
+                spellcheck="false"
+            />
+            <button
+                type="button"
+                class="button"
+                style="margin-left:6px"
+                onclick="document.getElementById('kw_maintenance_key').value = Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2,'0')).join('')"
+            ><?php esc_html_e( 'Generate Key', 'kw-security' ); ?></button>
+            <p class="description">
+                <?php esc_html_e( 'Set this same value as KW_MAINTENANCE_KEY in the maintenance-agent .env file. Click Generate Key, then Save Changes to activate. Regenerating invalidates the old key immediately.', 'kw-security' ); ?>
+            </p>
+            <?php
+        }
+
         public function render_whl_page() {
             $value = $this->current_login_slug();
             if ( get_option( 'permalink_structure' ) ) {
@@ -356,7 +425,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     '<code>%s</code> <input id="whl_page" type="text" name="whl_page" value="%s" class="regular-text">%s',
                     esc_html( trailingslashit( home_url() ) ),
                     esc_attr( $value ),
-                    $trailing // already-escaped fragment
+                    wp_kses( $trailing, array( 'code' => array() ) )
                 );
             } else {
                 printf(
@@ -378,7 +447,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     '<code>%s</code> <input id="whl_redirect_admin" type="text" name="whl_redirect_admin" value="%s" class="regular-text">%s',
                     esc_html( trailingslashit( home_url() ) ),
                     esc_attr( $value ),
-                    $trailing
+                    wp_kses( $trailing, array( 'code' => array() ) )
                 );
             } else {
                 printf(
@@ -420,13 +489,17 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
 
                 <?php // WordPress core's options-head.php already calls settings_errors() for pages under Settings menu — calling it here would duplicate the "Settings saved." notice. ?>
 
-                <?php if ( ! empty( $_GET['kw_scan'] ) ) : ?>
+                <?php
+                // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only redirect-back display set by admin-post handler; the underlying handler is nonce-protected via check_admin_referer().
+                if ( ! empty( $_GET['kw_scan'] ) ) : ?>
                     <div class="notice notice-info is-dismissible">
-                        <p><?php echo esc_html( wp_unslash( $_GET['kw_scan'] ) ); ?></p>
+                        <p><?php echo esc_html( sanitize_text_field( wp_unslash( $_GET['kw_scan'] ) ) ); ?></p>
                     </div>
                 <?php endif; ?>
 
-                <?php if ( isset( $_GET['settings-updated'] ) && self::is_enabled( 'hide_login_url' ) ) :
+                <?php
+                // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only display of the standard "settings-updated" flag set by WP core's options.php after its own nonce verification.
+                if ( isset( $_GET['settings-updated'] ) && self::is_enabled( 'hide_login_url' ) ) :
                     $current_url = home_url( '/' . $this->current_login_slug() . '/' ); ?>
                     <div class="notice notice-success is-dismissible">
                         <p>

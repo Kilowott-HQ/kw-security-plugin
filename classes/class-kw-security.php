@@ -41,6 +41,13 @@ if (!class_exists('KW_Security')) {
                 add_action('init', array($this, 'disable_file_editing'));
                 add_filter('upload_mimes', array($this, 'restrict_file_uploads'));
                 add_filter('wp_handle_upload_prefilter', array($this, 'block_dangerous_uploads'));
+
+                // On Nginx the .htaccess written at activation has no effect — show a
+                // persistent admin notice with the equivalent Nginx location block instead.
+                if ('nginx' === self::detect_server()) {
+                    add_action('admin_notices', array($this, 'nginx_upload_notice'));
+                }
+                add_action('admin_post_kw_nginx_notice_dismiss', array($this, 'handle_nginx_notice_dismiss'));
             }
 
             // Comment system disable
@@ -70,11 +77,72 @@ if (!class_exists('KW_Security')) {
                 add_option(KW_Security_Settings::OPTION_NAME, KW_Security_Settings::get_defaults());
             }
 
-            // Create .htaccess rules for upload security only if file security is on.
+            // Set up upload PHP-execution protection — method is server-aware.
             if (KW_Security_Settings::is_enabled('file_security')) {
                 $instance = new self();
-                $instance->create_upload_htaccess();
+                $instance->setup_upload_protection();
             }
+
+            // Phase 6-WP: register with the Kilowott scanner so it can deliver
+            // a per-site API key on its next run (no manual key entry required).
+            self::auto_register_site();
+        }
+
+        /**
+         * Phase 6-WP: register this site with the Kilowott maintenance scanner.
+         *
+         * Fetches the discovery document to find the current registration endpoint
+         * (indirection allows the endpoint URL to change without a plugin update),
+         * then POSTs the site URL. The scanner will deliver a per-site key via the
+         * /set-key REST endpoint on its next run.
+         *
+         * Registration is idempotent — re-activation is a no-op at the API level,
+         * but we track a local flag to skip the network round-trip on re-activation.
+         * Failure is intentionally silent (non-fatal).
+         */
+        public static function auto_register_site() {
+            // Already registered — skip the round-trip on re-activation.
+            if ( get_option( 'kw_auto_registered' ) ) {
+                return;
+            }
+
+            // Fetch discovery document to find the current registration URL.
+            if ( ! defined( 'KW_DISCOVERY_URL' ) ) {
+                return;
+            }
+
+            $discovery = wp_remote_get( KW_DISCOVERY_URL, array(
+                'timeout'   => 10,
+                'sslverify' => true,
+            ) );
+
+            if ( is_wp_error( $discovery ) ) {
+                return;
+            }
+
+            $config       = json_decode( wp_remote_retrieve_body( $discovery ), true );
+            $register_url = isset( $config['register_url'] ) ? $config['register_url'] : null;
+
+            if ( ! $register_url || ! filter_var( $register_url, FILTER_VALIDATE_URL ) ) {
+                return;
+            }
+
+            // POST registration — no auth needed, no secret in the request.
+            $response = wp_remote_post( $register_url, array(
+                'timeout' => 10,
+                'headers' => array( 'Content-Type' => 'application/json' ),
+                'body'    => wp_json_encode( array(
+                    'site_url'       => home_url(),
+                    'plugin_version' => KW_SECURITY_VERSION,
+                ) ),
+            ) );
+
+            if ( is_wp_error( $response ) ) {
+                return;
+            }
+
+            // Mark locally so re-activation skips the round-trip.
+            update_option( 'kw_auto_registered', '1', false );
         }
 
         /**
@@ -282,6 +350,111 @@ if (!class_exists('KW_Security')) {
         }
 
         /**
+         * Detect the web server type from SERVER_SOFTWARE.
+         *
+         * Returns 'nginx' for Nginx / OpenResty. Returns 'apache' for everything
+         * else (Apache, LiteSpeed, unknown) — all of which honour .htaccess files.
+         *
+         * @return string 'nginx' | 'apache'
+         */
+        private static function detect_server() {
+            $sw = isset( $_SERVER['SERVER_SOFTWARE'] )
+                ? strtolower( sanitize_text_field( wp_unslash( $_SERVER['SERVER_SOFTWARE'] ) ) )
+                : '';
+            if ( strpos( $sw, 'nginx' ) !== false || strpos( $sw, 'openresty' ) !== false ) {
+                return 'nginx';
+            }
+            return 'apache';
+        }
+
+        /**
+         * Route upload PHP-execution protection to the right method for the
+         * current web server.
+         *
+         * Apache / LiteSpeed: write the .htaccess (existing behaviour).
+         * Nginx / OpenResty:  skip the file — Nginx ignores .htaccess entirely.
+         *                     An admin notice (nginx_upload_notice) surfaces the
+         *                     equivalent location block to add server-side.
+         */
+        public function setup_upload_protection() {
+            if ( 'nginx' === self::detect_server() ) {
+                return;
+            }
+            $this->create_upload_htaccess();
+        }
+
+        /**
+         * Admin notice shown on Nginx servers when file_security is enabled.
+         *
+         * Shown on all admin pages (dismissible per-user) and always shown on
+         * the KW Security settings page regardless of dismissal so the config
+         * requirement is never silently forgotten.
+         */
+        public function nginx_upload_notice() {
+            if ( ! current_user_can( 'manage_options' ) ) {
+                return;
+            }
+
+            // Determine whether we are on the KW Security settings page.
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only page check, no state change.
+            $on_settings_page = isset( $_GET['page'] ) && sanitize_key( $_GET['page'] ) === KW_Security_Settings::PAGE_SLUG;
+
+            // Outside the settings page, respect per-user dismissal.
+            if ( ! $on_settings_page && get_user_meta( get_current_user_id(), 'kw_security_nginx_notice_dismissed', true ) ) {
+                return;
+            }
+
+            // Build the uploads URL path for the Nginx location directive.
+            $upload_info  = wp_upload_dir();
+            $uploads_path = rtrim( wp_parse_url( $upload_info['baseurl'], PHP_URL_PATH ), '/' );
+
+            $dismiss_url = wp_nonce_url(
+                admin_url( 'admin-post.php?action=kw_nginx_notice_dismiss' ),
+                'kw_nginx_notice_dismiss'
+            );
+
+            $snippet = 'location ~* ' . esc_html( $uploads_path ) . '/.*\\.(php|php3|php4|php5|phtml|phps|phar|exe|com|bat|cmd|scr|cgi|pl|sh)$ {' . "\n"
+                     . '    deny all;' . "\n"
+                     . '}';
+
+            ?>
+            <div class="notice notice-warning <?php echo $on_settings_page ? '' : 'is-dismissible'; ?>">
+                <p>
+                    <strong><?php esc_html_e( 'KW Security — Action required on Nginx: uploads directory is not protected.', 'kw-security' ); ?></strong>
+                </p>
+                <p>
+                    <?php esc_html_e( 'This site runs on Nginx (or OpenResty). Nginx ignores .htaccess files, so the uploads PHP-execution block written by KW Security has no effect. Add the following block inside your server {} configuration and reload Nginx:', 'kw-security' ); ?>
+                </p>
+                <pre style="background:#f6f7f7;border:1px solid #ddd;padding:10px 14px;overflow:auto;font-size:12px;line-height:1.6;"><?php echo esc_html( $snippet ); ?></pre>
+                <p style="color:#666;font-size:12px;">
+                    <?php esc_html_e( 'On Servebolt: paste this into the Nginx configuration panel for this site and click Save, then Activate.', 'kw-security' ); ?>
+                </p>
+                <?php if ( ! $on_settings_page ) : ?>
+                <p>
+                    <a href="<?php echo esc_url( $dismiss_url ); ?>" class="button button-secondary">
+                        <?php esc_html_e( 'Dismiss', 'kw-security' ); ?>
+                    </a>
+                </p>
+                <?php endif; ?>
+            </div>
+            <?php
+        }
+
+        /**
+         * Handle the "Dismiss" GET request from the Nginx admin notice.
+         * Stores the dismissal in per-user meta so other users still see the notice.
+         */
+        public function handle_nginx_notice_dismiss() {
+            check_admin_referer( 'kw_nginx_notice_dismiss' );
+            if ( ! current_user_can( 'manage_options' ) ) {
+                wp_die();
+            }
+            update_user_meta( get_current_user_id(), 'kw_security_nginx_notice_dismissed', 1 );
+            wp_safe_redirect( wp_get_referer() ?: admin_url() );
+            exit;
+        }
+
+        /**
          * Create .htaccess file in uploads directory to prevent PHP execution
          */
         public function create_upload_htaccess() {
@@ -317,14 +490,20 @@ if (!class_exists('KW_Security')) {
             $htaccess_content .= "Deny from all\n";
             $htaccess_content .= "</FilesMatch>\n";
 
-            // Only create if it doesn't exist or if it doesn't contain our rules
+            // Only create if it doesn't exist or if it doesn't contain our rules.
+            // Local filesystem ops are intentional here: writing .htaccess into the uploads
+            // directory at plugin activation. wp_remote_get is for HTTP; WP_Filesystem requires
+            // FTP credentials prompts during activation which would break unattended setups.
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
             if (!file_exists($htaccess_file) || strpos(file_get_contents($htaccess_file), 'KW Security') === false) {
                 // If file exists, append our rules
                 if (file_exists($htaccess_file)) {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
                     $existing_content = file_get_contents($htaccess_file);
                     $htaccess_content = $existing_content . "\n\n" . $htaccess_content;
                 }
-                
+
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
                 file_put_contents($htaccess_file, $htaccess_content);
             }
         }
@@ -337,7 +516,7 @@ if (!class_exists('KW_Security')) {
             global $pagenow;
 
             if ($pagenow === 'edit-comments.php') {
-                wp_redirect(admin_url());
+                wp_safe_redirect(admin_url());
                 exit;
             }
 

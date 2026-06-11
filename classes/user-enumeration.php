@@ -41,6 +41,7 @@ if ( ! class_exists( 'KW_User_Enumeration' ) ) {
             if ( is_user_logged_in() ) {
                 return;
             }
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only routing check on a public query var; no state change.
             if ( ! isset( $_GET['author'] ) || ! is_numeric( $_GET['author'] ) ) {
                 return;
             }
