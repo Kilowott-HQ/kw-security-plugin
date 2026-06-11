@@ -25,7 +25,7 @@ define('KW_SECURITY_PLUGIN_FILE', __FILE__);
 // Phase 6-WP: auto-registration.
 // KW_DISCOVERY_URL points to the Kilowott registration endpoint discovery doc.
 // Returns { register_url, version } so the endpoint can move without a plugin update.
-define('KW_DISCOVERY_URL', 'https://ftvvgxirlfyzgsnaovvz.supabase.co/functions/v1/wp-register');
+define('KW_DISCOVERY_URL', 'https://raw.githubusercontent.com/Kilowott-HQ/kw-plugin-config/main/kw-registration.json');
 
 // RSA-2048 public key used to verify key-delivery requests from the Kilowott scanner.
 // The scanner signs with the corresponding private key (never distributed).
