@@ -201,6 +201,9 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
             $php_status  = self::classify_php( $php_version );
 
             // ── Plugins ──────────────────────────────────────────────────
+            if ( ! function_exists( 'is_plugin_active' ) ) {
+                require_once ABSPATH . 'wp-admin/includes/plugin.php';
+            }
             $all_plugins      = get_plugins();
             $update_transient = get_site_transient( 'update_plugins' );
             // Transient may not exist yet if WP hasn't run an update check.
@@ -239,6 +242,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                     'latest'             => $latest_ver,
                     'update_available'   => $update_available,
                     'is_security_update' => $is_security,
+                    'active'             => is_plugin_active( $plugin_file ),
                 );
             }
 
