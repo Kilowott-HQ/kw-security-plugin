@@ -707,9 +707,10 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                 }
 
                 public function column_ip( $item ) {
-                    return $item->ip
-                        ? esc_html( $item->ip )
-                        : '<em style="color:#999;">' . esc_html__( 'n/a', 'kw-security' ) . '</em>';
+                    if ( ! $item->ip ) {
+                        return '<em style="color:#999;">' . esc_html__( 'n/a', 'kw-security' ) . '</em>';
+                    }
+                    return '<a href="' . esc_url( 'https://www.whois.com/whois/' . $item->ip ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $item->ip ) . '</a>';
                 }
 
                 public function column_object_type( $item ) {
@@ -721,11 +722,63 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                 }
 
                 public function column_object_name( $item ) {
-                    $out = esc_html( $item->object_name );
+                    $url = $this->get_object_link( $item );
+                    $out = $url
+                        ? '<a href="' . esc_url( $url ) . '">' . esc_html( $item->object_name ) . '</a>'
+                        : esc_html( $item->object_name );
                     if ( $item->object_subtype ) {
                         $out .= '<br><small style="color:#999;">' . esc_html( $item->object_subtype ) . '</small>';
                     }
                     return $out;
+                }
+
+                /**
+                 * Resolve an admin URL for the logged object, or empty string
+                 * when the object no longer exists / has no sensible target.
+                 */
+                private function get_object_link( $item ) {
+                    $object_id = (int) $item->object_id;
+
+                    switch ( $item->object_type ) {
+
+                        case 'Post':
+                        case 'Media':
+                            if ( $object_id && get_post( $object_id ) ) {
+                                $url = get_edit_post_link( $object_id, 'url' );
+                                return $url ? $url : '';
+                            }
+                            return '';
+
+                        case 'User':
+                            if ( $object_id && get_userdata( $object_id ) ) {
+                                return get_edit_user_link( $object_id );
+                            }
+                            return '';
+
+                        case 'Plugin':
+                            $url = admin_url( 'plugins.php' );
+                            if ( $item->object_name ) {
+                                $url = add_query_arg(
+                                    array(
+                                        's'             => rawurlencode( $item->object_name ),
+                                        'plugin_status' => 'all',
+                                    ),
+                                    $url
+                                );
+                            }
+                            return $url;
+
+                        case 'Theme':
+                            return admin_url( 'themes.php' );
+
+                        case 'WordPress':
+                            return admin_url( 'update-core.php' );
+
+                        case 'Settings':
+                            return admin_url( 'options-general.php?page=' . KW_Security_Settings::PAGE_SLUG );
+                    }
+
+                    return '';
                 }
 
                 public function column_action( $item ) {
