@@ -7,7 +7,8 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 🔒 **Controlled Updates**: Allows security patches while blocking major updates
 - 🛡️ **HTTP Security Headers**: X-Frame-Options, CSP, HSTS, Referrer-Policy, Permissions-Policy
 - 🚪 **Hide Login URL**: Replace `/wp-login.php` with a custom slug
-- 👤 **User Enumeration Protection**: Block `?author=N` leaks and gate `/wp/v2/users` REST endpoint
+- 👤 **User Enumeration Protection**: Redirect `?author=N` requests to homepage and gate `/wp/v2/users` REST endpoint
+- 👤 **Disable Author URLs**: Redirects `/author/username` archive pages to the homepage, preventing username exposure via author slugs
 - 🔐 **Login Rate Limiting**: Lock out IPs after repeated failed login attempts
 - 🔍 **File Integrity Monitoring**: Daily scan of WP root for unknown PHP files and modifications to `index.php` / `wp-config.php`
 - 🔑 **Strong Password Policy**: Enforce 12+ char passwords with mixed case, digits, and symbols for administrator accounts
@@ -20,7 +21,7 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 
 ## Installation
 
-1. Download the plugin zip file
+1. Download the plugin zip file ([kw-security.zip](https://github.com/Kilowott-HQ/kw-security-plugin/releases/latest/download/kw-security.zip))
 2. Go to **WordPress Admin → Plugins → Add New**
 3. Click **Upload Plugin** and select the zip file
 4. Click **Install Now**
@@ -39,7 +40,8 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | Controlled Auto-Updates | ON | Security-only auto-updates for core/plugins/themes |
 | Disable XML-RPC Pingbacks | ON | XML-RPC disable + pingback method removal |
 | HTTP Security Headers | ON | X-Frame-Options, CSP, HSTS, Referrer-Policy, Permissions-Policy |
-| Block User Enumeration | ON | `/?author=N` 404, auth required for `/wp/v2/users` |
+| Block User Enumeration | ON | `/?author=N` redirects to homepage, auth required for `/wp/v2/users` |
+| Disable Author URLs | ON | Redirects `/author/username` archive pages to homepage for all visitors |
 | Login Rate Limiting | ON | 5 failed attempts / 15 min → 1-hour IP lockout; generic "Invalid login credentials" error |
 | File Integrity Monitoring | ON | Daily WP-Cron scan; emails admin on unknown PHP in root or modified `index.php` / `wp-config.php` |
 | Strong Password Policy (Admins) | ON | Requires 12+ chars with upper, lower, digit, and symbol when creating/updating administrator passwords |
@@ -275,6 +277,10 @@ The update notice should appear under KW Security on the Plugins screen within a
 ---
 
 ## Changelog
+
+### Version 26.06.12
+- **Disable Author URLs**: new independent toggle that redirects `/author/username` archive pages to the homepage for all visitors, preventing username exposure via author slugs
+- **User Enumeration redirect**: `/?author=N` requests by anonymous visitors now redirect to the homepage (301) instead of returning a 404
 
 ### Version 26.06.01
 - **Maintenance API**: new read-only REST endpoint (`/wp-json/kw-security/v1/site-status`) for the Kilowott maintenance agent — returns WP version, PHP version, and plugin update status; gated by `Authorization: Bearer <key>` (timing-safe comparison), HTTPS-enforced, rate-limited to 20 req/hour per IP

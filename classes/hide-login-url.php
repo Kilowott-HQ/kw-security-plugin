@@ -321,7 +321,7 @@ if ( ! class_exists( 'KW_Hide_Login' ) ) {
 				&& isset( $request['path'] )
 				&& '/wp-admin/options.php' === $request['path']
 			) {
-				header( 'Location: ' . $this->new_redirect_url() );
+				wp_safe_redirect( esc_url_raw( $this->new_redirect_url() ) );
 				die;
 			}
 

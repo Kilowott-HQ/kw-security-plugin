@@ -63,6 +63,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'login_rate_limit'  => true,
                 'file_integrity'    => true,
                 'password_policy'   => true,
+                'disable_author_url' => true,
                 'hide_login_url'    => false,
                 'maintenance_api'   => true,
             );
@@ -118,7 +119,11 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'user_enumeration' => array(
                     'label'       => __( 'Block User Enumeration', 'kw-security' ),
-                    'description' => __( 'Returns 404 for /?author=N requests by anonymous visitors and requires authentication for the /wp/v2/users REST endpoint, preventing username discovery.', 'kw-security' ),
+                    'description' => __( 'Redirects /?author=N requests by anonymous visitors to the homepage and requires authentication for the /wp/v2/users REST endpoint, preventing username discovery.', 'kw-security' ),
+                ),
+                'disable_author_url' => array(
+                    'label'       => __( 'Disable Author URLs', 'kw-security' ),
+                    'description' => __( 'Redirects /author/username archive pages to the homepage for all visitors, preventing username exposure via author slugs.', 'kw-security' ),
                 ),
                 'login_rate_limit' => array(
                     'label'       => __( 'Login Rate Limiting', 'kw-security' ),
@@ -364,13 +369,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             $key      = $args['key'];
             $enabled  = self::is_enabled( $key );
             $name     = self::OPTION_NAME . '[' . $key . ']';
+            $status   = $enabled ? __( 'Enabled', 'kw-security' ) : __( 'Disabled', 'kw-security' );
             ?>
             <label>
                 <input type="checkbox"
+                       class="kw-feature-toggle"
                        name="<?php echo esc_attr( $name ); ?>"
                        value="1"
                        <?php checked( $enabled ); ?> />
-                <?php echo esc_html__( 'Enabled', 'kw-security' ); ?>
+                <span class="kw-toggle-status"><?php echo esc_html( $status ); ?></span>
             </label>
             <p class="description"><?php echo wp_kses_post( $args['description'] ); ?></p>
             <?php
@@ -522,6 +529,18 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
 
                 <?php $this->render_file_integrity_panel(); ?>
             </div>
+            <script>
+            ( function () {
+                document.querySelectorAll( '.kw-feature-toggle' ).forEach( function ( checkbox ) {
+                    checkbox.addEventListener( 'change', function () {
+                        var span = this.parentNode.querySelector( '.kw-toggle-status' );
+                        if ( span ) {
+                            span.textContent = this.checked ? '<?php echo esc_js( __( 'Enabled', 'kw-security' ) ); ?>' : '<?php echo esc_js( __( 'Disabled', 'kw-security' ) ); ?>';
+                        }
+                    } );
+                } );
+            } )();
+            </script>
             <?php
         }
     }

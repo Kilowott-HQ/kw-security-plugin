@@ -6,10 +6,10 @@
  *
  *   1. ?author=N redirect leak
  *      Visiting /?author=1 normally redirects to /author/<username>/, which
- *      exposes the login slug for that user ID. We send 404 instead for
- *      anonymous visitors. Author archives reached via /author/<slug>/ keep
- *      working — only the numeric form is blocked. Logged-in users (admins
- *      inspecting the site) keep normal behavior.
+ *      exposes the login slug for that user ID. We redirect to the homepage
+ *      instead for anonymous visitors. Author archives reached via
+ *      /author/<slug>/ keep working — only the numeric form is blocked.
+ *      Logged-in users (admins inspecting the site) keep normal behavior.
  *
  *   2. Unauthenticated /wp/v2/users REST listing
  *      The default endpoint exposes user_login, display_name, avatar URLs,
@@ -27,15 +27,16 @@ if ( ! class_exists( 'KW_User_Enumeration' ) ) {
     class KW_User_Enumeration {
 
         public function __construct() {
-            // Run before redirect_canonical (priority 10) so the leak never happens.
-            add_action( 'template_redirect', array( $this, 'block_author_query' ), 1 );
+            // Hook on 'wp' (fires before template_redirect and redirect_canonical)
+            // so the block cannot be raced by earlier canonical redirects.
+            add_action( 'wp', array( $this, 'block_author_query' ), 1 );
 
             // Gate /wp/v2/users behind authentication.
             add_filter( 'rest_authentication_errors', array( $this, 'restrict_users_endpoint' ) );
         }
 
         /**
-         * Convert /?author=N requests into 404s for anonymous visitors.
+         * Redirect /?author=N requests to the homepage for anonymous visitors.
          */
         public function block_author_query() {
             if ( is_user_logged_in() ) {
@@ -46,17 +47,9 @@ if ( ! class_exists( 'KW_User_Enumeration' ) ) {
                 return;
             }
 
-            // Stop core's canonical redirect from leaking the username.
-            remove_action( 'template_redirect', 'redirect_canonical' );
-
-            global $wp_query;
-            if ( $wp_query ) {
-                $wp_query->is_author  = false;
-                $wp_query->is_archive = false;
-                $wp_query->set_404();
-            }
-            status_header( 404 );
             nocache_headers();
+            wp_safe_redirect( home_url( '/' ), 301 );
+            exit;
         }
 
         /**
@@ -92,5 +85,31 @@ if ( ! class_exists( 'KW_User_Enumeration' ) ) {
 
     if ( KW_Security_Settings::is_enabled( 'user_enumeration' ) ) {
         new KW_User_Enumeration();
+    }
+}
+
+if ( ! class_exists( 'KW_Disable_Author_URL' ) ) {
+
+    class KW_Disable_Author_URL {
+
+        public function __construct() {
+            add_action( 'template_redirect', array( $this, 'redirect_author_archive' ), 1 );
+        }
+
+        /**
+         * Redirect /author/<slug> archive pages to the homepage for all visitors.
+         */
+        public function redirect_author_archive() {
+            if ( ! is_author() ) {
+                return;
+            }
+            nocache_headers();
+            wp_safe_redirect( home_url( '/' ), 301 );
+            exit;
+        }
+    }
+
+    if ( KW_Security_Settings::is_enabled( 'disable_author_url' ) ) {
+        new KW_Disable_Author_URL();
     }
 }

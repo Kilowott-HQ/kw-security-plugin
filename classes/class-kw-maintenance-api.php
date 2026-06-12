@@ -115,7 +115,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
             }
 
             // 2. Rate limiting — 20 requests per hour per hashed IP.
-            $ip      = isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
+            $ip      = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
             $ip_hash = sha1( $ip . wp_salt() );
             $rl_key  = 'kw_maint_rl_' . substr( $ip_hash, 0, 16 );
             $count   = (int) get_transient( $rl_key );
