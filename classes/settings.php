@@ -54,6 +54,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
          */
         public static function get_defaults() {
             return array(
+                'activity_log'      => true,
                 'comments'          => true,
                 'file_security'     => true,
                 'update_management' => true,
@@ -97,6 +98,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
          */
         private function get_feature_metadata() {
             return array(
+                'activity_log' => array(
+                    'label'       => __( 'Activity Log', 'kw-security' ),
+                    'description' => __( 'Records security-relevant events (logins, logouts, failed logins, plugin/theme changes, post edits, file uploads, and settings saves) to a database log. View the log at <a href="options-general.php?page=kw-activity-log">Settings → Activity Log</a>.', 'kw-security' ),
+                ),
                 'comments' => array(
                     'label'       => __( 'Disable Comments', 'kw-security' ),
                     'description' => __( 'Disables WordPress comments site-wide, removes comment admin pages, blocks comment REST endpoints, and disables pingbacks/trackbacks. Turn this OFF if the site genuinely needs comments.', 'kw-security' ),

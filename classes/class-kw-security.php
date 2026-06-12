@@ -83,6 +83,11 @@ if (!class_exists('KW_Security')) {
                 $instance->setup_upload_protection();
             }
 
+            // Create activity log table.
+            if (class_exists('KW_Activity_Log')) {
+                KW_Activity_Log::activation();
+            }
+
             // Phase 6-WP: register with the Kilowott scanner so it can deliver
             // a per-site API key on its next run (no manual key entry required).
             self::auto_register_site();
@@ -152,6 +157,9 @@ if (!class_exists('KW_Security')) {
         public static function plugin_deactivation() {
             if (class_exists('KW_File_Integrity')) {
                 KW_File_Integrity::deactivation();
+            }
+            if (class_exists('KW_Activity_Log')) {
+                KW_Activity_Log::deactivation();
             }
         }
 

@@ -14,6 +14,7 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 🔑 **Strong Password Policy**: Enforce 12+ char passwords with mixed case, digits, and symbols for administrator accounts
 - 💬 **Comment Security**: Disables comments, pingbacks, and trackbacks
 - 📁 **File Security**: Prevents dangerous file uploads and disables file editing
+- 📋 **Activity Log**: Records logins, failed logins, plugin/theme changes, post edits, media uploads, and settings changes to a searchable, filterable log at **Settings → Activity Log**
 - 🔁 **GitHub Update Notifications**: Surfaces new releases on the WordPress Updates screen
 - 🔧 **Maintenance API**: Read-only REST endpoint for the Kilowott maintenance agent to query site health (WP/PHP version, plugin update status), gated by a Bearer key
 - 🌐 **Nginx Upload Protection**: Server-aware file security — skips the ineffective `.htaccess` on Nginx/OpenResty and shows an admin notice with the equivalent Nginx location block
@@ -47,6 +48,7 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | Strong Password Policy (Admins) | ON | Requires 12+ chars with upper, lower, digit, and symbol when creating/updating administrator passwords |
 | Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
 | Maintenance API | ON | Read-only REST endpoint (`/wp-json/kw-security/v1/site-status`) used by the Kilowott maintenance agent; gated by `Authorization: Bearer <key>`, rate-limited to 20 req/hour |
+| Activity Log | ON | Records security-relevant events (logins, failed logins, plugin/theme/core changes, post edits, media uploads, settings saves) to a database log viewable at Settings → Activity Log; 90-day retention with daily cleanup |
 
 > **About "Hide Login URL":** Disabled by default because changing the login URL is a disruptive change that requires bookmarking a custom URL. Enable only when ready, and configure the slug in the same Settings → KW Security page before saving.
 
@@ -100,6 +102,7 @@ kw-security/
 │   ├── file-integrity.php              # Daily root-dir scan + email alerts
 │   ├── password-policy.php             # Strong password enforcement (admin role)
 │   ├── class-kw-maintenance-api.php    # Maintenance REST API (site-status + set-key endpoints)
+│   ├── activity-log.php                # Activity log (event recording + admin list table)
 │   └── updater.php                     # GitHub-based update checker
 ├── vendor/
 │   └── plugin-update-checker/          # PUC v5.6 library (vendored)
@@ -278,7 +281,13 @@ The update notice should appear under KW Security on the Plugins screen within a
 
 ## Changelog
 
-### Version 26.06.12
+### Version 26.06.04
+- **Activity Log**: new feature (enabled by default) that records security-relevant events — user logins/logouts/failed logins/registrations/deletions/password resets, post create/update/trash/delete, media uploads/deletions, plugin activate/deactivate/install/update, theme switches/installs/updates, WordPress core updates, and KW Security settings changes
+- Log viewable at **Settings → Activity Log** with search, sortable columns, type/action filter dropdowns, pagination, and a Clear All Logs action
+- Entries stored in a dedicated `wp_kw_activity_log` table; 90-day retention enforced by a daily WP-Cron cleanup
+- Settings toggle labels now switch between "Enabled"/"Disabled" to reflect the checkbox state
+
+### Version 26.06.03
 - **Disable Author URLs**: new independent toggle that redirects `/author/username` archive pages to the homepage for all visitors, preventing username exposure via author slugs
 - **User Enumeration redirect**: `/?author=N` requests by anonymous visitors now redirect to the homepage (301) instead of returning a 404
 
