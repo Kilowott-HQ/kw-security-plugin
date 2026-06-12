@@ -283,6 +283,19 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             foreach ( $defaults as $key => $default ) {
                 $clean[ $key ] = ! empty( $input[ $key ] );
             }
+
+            // Activity Log cannot be enabled while the Aryo "Activity Log"
+            // plugin is active — enforced server-side, not just in the UI.
+            if ( $clean['activity_log'] && class_exists( 'KW_Activity_Log' ) && KW_Activity_Log::is_conflicting() ) {
+                $clean['activity_log'] = false;
+                add_settings_error(
+                    self::OPTION_NAME,
+                    'kw_activity_log_conflict',
+                    __( 'Activity Log was not enabled: deactivate the "Activity Log" plugin (aryo-activity-log) first.', 'kw-security' ),
+                    'error'
+                );
+            }
+
             return $clean;
         }
 
@@ -374,16 +387,32 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             $key      = $args['key'];
             $enabled  = self::is_enabled( $key );
             $name     = self::OPTION_NAME . '[' . $key . ']';
-            $status   = $enabled ? __( 'Enabled', 'kw-security' ) : __( 'Disabled', 'kw-security' );
+
+            // Activity Log cannot be enabled while the Aryo "Activity Log"
+            // plugin is active — both loggers would record every event twice.
+            $conflict = ( 'activity_log' === $key
+                && class_exists( 'KW_Activity_Log' )
+                && KW_Activity_Log::is_conflicting() );
+
+            if ( $conflict ) {
+                $enabled = false;
+            }
+            $status = $enabled ? __( 'Enabled', 'kw-security' ) : __( 'Disabled', 'kw-security' );
             ?>
             <label>
                 <input type="checkbox"
                        class="kw-feature-toggle"
                        name="<?php echo esc_attr( $name ); ?>"
                        value="1"
-                       <?php checked( $enabled ); ?> />
+                       <?php checked( $enabled ); ?>
+                       <?php disabled( $conflict ); ?> />
                 <span class="kw-toggle-status"><?php echo esc_html( $status ); ?></span>
             </label>
+            <?php if ( $conflict ) : ?>
+                <p style="color:#d63638;margin:4px 0 0;">
+                    <?php esc_html_e( 'Blocked: the "Activity Log" plugin (aryo-activity-log) is active. Deactivate that plugin first, then enable this feature.', 'kw-security' ); ?>
+                </p>
+            <?php endif; ?>
             <p class="description"><?php echo wp_kses_post( $args['description'] ); ?></p>
             <?php
         }

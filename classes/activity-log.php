@@ -517,6 +517,41 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
         }
 
         // ----------------------------------------------------------------
+        // Conflict detection
+        // ----------------------------------------------------------------
+
+        /**
+         * Whether the Activity Log plugin by Aryo (aryo-activity-log) is
+         * active. Running both loggers would duplicate every event, so
+         * this feature stays dormant until the other plugin is deactivated.
+         */
+        public static function is_conflicting() {
+            return class_exists( 'AAL_Main' ) || defined( 'ACTIVITY_LOG__FILE__' );
+        }
+
+        /**
+         * Bootstrap at plugins_loaded so the conflict check sees every
+         * other plugin regardless of load order.
+         */
+        public static function maybe_init() {
+            if ( self::is_conflicting() ) {
+                add_action( 'admin_notices', array( __CLASS__, 'conflict_notice' ) );
+                return;
+            }
+            new self();
+        }
+
+        /**
+         * Admin notice shown when the feature is enabled but blocked by
+         * the Aryo Activity Log plugin.
+         */
+        public static function conflict_notice() {
+            echo '<div class="notice notice-error is-dismissible"><p>'
+                . esc_html__( 'KW Security — the Activity Log feature has been disabled because the "Activity Log" plugin (aryo-activity-log) is currently active. Please deactivate that plugin first to use the KW Security activity log.', 'kw-security' )
+                . '</p></div>';
+        }
+
+        // ----------------------------------------------------------------
         // Activation / Deactivation
         // ----------------------------------------------------------------
 
@@ -751,6 +786,8 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
     }
 
     if ( KW_Security_Settings::is_enabled( 'activity_log' ) ) {
-        new KW_Activity_Log();
+        // Deferred to plugins_loaded so the aryo-activity-log conflict check
+        // works regardless of plugin load order.
+        add_action( 'plugins_loaded', array( 'KW_Activity_Log', 'maybe_init' ), 1 );
     }
 }
