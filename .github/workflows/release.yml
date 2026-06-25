@@ -169,9 +169,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add kw-security.php
-          # [skip ci] prevents this commit from re-triggering any push-based workflows
-          git commit -m "chore: bump version to ${V} [skip ci]"
-          git push origin main
+          # If the file is already at the target version (e.g. a maintainer
+          # pre-bumped it in a regular PR), the sed step above was a no-op
+          # and there is nothing to commit. That's a valid state — skip the
+          # commit/push and let the tag + release steps run.
+          if git diff --cached --quiet; then
+            echo "::notice::kw-security.php already at version ${V}; skipping bump commit."
+          else
+            # [skip ci] prevents this commit from re-triggering push-based workflows
+            git commit -m "chore: bump version to ${V} [skip ci]"
+            git push origin main
+          fi
 
       - name: Create and push tag
         if: ${{ github.event.inputs.dry_run != 'true' }}
