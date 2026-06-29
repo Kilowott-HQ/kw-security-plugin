@@ -42,9 +42,13 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         const CONST_MENTION     = 'KW_SLACK_MENTION';
         const ENV_MENTION       = 'KW_SLACK_MENTION';
         const DEDUPE_WINDOW     = 300; // seconds — collapse identical alerts.
+        const MAX_QUEUE         = 50;  // hard cap on per-request queued alerts.
 
-        /** @var array<int,array{url:string,body:string}> Pending sends, flushed on shutdown. */
+        /** @var array<int,array{url:string,body:string,key:string}> Pending sends, flushed on shutdown. */
         private $queue = array();
+
+        /** @var array<string,bool> Dedupe keys already queued this request. */
+        private $queued_keys = array();
 
         /** @var bool Whether the shutdown flush callback is registered. */
         private $shutdown_hooked = false;
@@ -75,9 +79,12 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             add_action( 'wp_ajax_woocommerce_update_api_key', array( $this, 'on_woo_api_key' ), 9 );
             add_action( 'set_site_transient_update_plugins', array( $this, 'on_plugins_update_check' ), 10, 1 );
 
-            // Real-time Wordfence events (admin login, lockout, IP block) come
-            // through its security-event action; scan findings come via email.
-            add_action( 'wordfence_security_event', array( $this, 'on_wordfence_event' ), 10, 2 );
+            // Wordfence's wordfence_security_event action is intentionally NOT
+            // consumed: its event names vary across versions (admin-login events
+            // are email-only on current trunk, and 'block' covers every
+            // firewall action, not just logins). Login/lockout detection stays
+            // native (robust, version-independent); only Wordfence *scan*
+            // findings are relayed, via its alert emails.
             add_filter( 'wp_mail', array( $this, 'on_wp_mail' ), 99, 1 );
         }
 
@@ -159,11 +166,11 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
          * @return array<int,string>
          */
         public static function get_wordfence_sourced() {
+            // Only Wordfence *scan* findings are relayed (via alert emails),
+            // because those are reliable across versions. Login/lockout/block
+            // detection stays native — it does not depend on Wordfence-internal
+            // event names that change between releases.
             return (array) apply_filters( 'kw_slack_wordfence_sourced', array(
-                'admin_login',
-                'admin_login_new_ip',
-                'login_lockout',
-                'login_blocked',
                 'file_changed',
                 'plugin_update_critical',
                 'malware',
@@ -242,17 +249,18 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                     continue;
                 }
                 $bare = ltrim( $token, '!@' );
-                if ( '<' === $token[0] ) {
-                    $out[] = $token;
-                } elseif ( in_array( strtolower( $bare ), array( 'here', 'channel', 'everyone' ), true ) ) {
+                if ( in_array( strtolower( $bare ), array( 'here', 'channel', 'everyone' ), true ) ) {
                     $out[] = '<!' . strtolower( $bare ) . '>';
                 } elseif ( preg_match( '/^[UW][A-Z0-9]{6,}$/', $bare ) ) {
                     $out[] = '<@' . $bare . '>';
                 } elseif ( preg_match( '/^S[A-Z0-9]{6,}$/', $bare ) ) {
                     $out[] = '<!subteam^' . $bare . '>';
-                } else {
+                } elseif ( preg_match( '/^<(@[UW][A-Z0-9]+|#[CG][A-Z0-9]+|!subteam\^[A-Z0-9]+|!(?:here|channel|everyone))>$/', $token ) ) {
+                    // Already a well-formed Slack control sequence — pass through.
                     $out[] = $token;
                 }
+                // Anything else (plain names, "<https://evil|click>" link
+                // tokens) is dropped: it would not ping and could inject markup.
             }
             return implode( ' ', $out );
         }
@@ -274,9 +282,13 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 return;
             }
             $url = self::get_webhook_url();
-            if ( ! $url ) {
+            if ( ! self::is_valid_webhook( $url ) ) {
                 return;
             }
+
+            // Cap the headline so a crafted/huge value (e.g. a 65 KB email
+            // subject or filename) can't produce a payload Slack rejects.
+            $title = self::truncate( (string) $title, 280 );
 
             /**
              * Final say on whether an alert is sent. Return false to drop it.
@@ -290,30 +302,36 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 return;
             }
 
-            // Collapse identical alerts within a short window (e.g. the same
-            // IP tripping the lockout repeatedly) so an attack can't flood
-            // the channel. Distinct events (different IP/file) pass through
-            // because the key includes the headline.
-            $dedupe_key = 'kw_slack_seen_' . md5( $category . '|' . $title );
-            if ( get_transient( $dedupe_key ) ) {
+            // De-duplicate. Burst-prone categories key on the category alone so
+            // a botnet rotating IPs can't flood the channel with near-identical
+            // alerts; everything else keys on the headline too. The transient is
+            // written only AFTER successful delivery (in flush()), so a request
+            // that fatals mid-shutdown doesn't suppress the retry.
+            $dedupe_key = self::dedupe_key( $category, $title );
+            if ( isset( $this->queued_keys[ $dedupe_key ] ) || get_transient( $dedupe_key ) ) {
                 return;
             }
-            set_transient( $dedupe_key, 1, self::DEDUPE_WINDOW );
+
+            // Bound the in-memory queue so an event flood can't exhaust memory.
+            if ( count( $this->queue ) >= self::MAX_QUEUE ) {
+                return;
+            }
+
+            $body = wp_json_encode( $this->build_payload( $category, $title, $context ) );
+            if ( false === $body ) {
+                return;
+            }
 
             // Queue the send and flush on shutdown rather than posting inline.
             // A non-blocking POST here is unreliable: most admin write-actions
             // (create/delete user, role change, settings save) call
             // wp_redirect()+exit immediately after the event hook, tearing down
-            // the socket before a fire-and-forget request can transmit. The
-            // shutdown flush (after fastcgi_finish_request where available)
-            // delivers reliably without adding latency to the visitor.
-            $body = wp_json_encode( $this->build_payload( $category, $title, $context ) );
-            if ( false === $body ) {
-                return;
-            }
+            // the socket before a fire-and-forget request can transmit.
+            $this->queued_keys[ $dedupe_key ] = true;
             $this->queue[] = array(
                 'url'  => $url,
                 'body' => $body,
+                'key'  => $dedupe_key,
             );
             if ( ! $this->shutdown_hooked ) {
                 add_action( 'shutdown', array( $this, 'flush' ), 0 );
@@ -339,13 +357,33 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             }
 
             foreach ( $queue as $item ) {
-                wp_remote_post( $item['url'], array(
+                $response = wp_remote_post( $item['url'], array(
                     'timeout'     => 4,
                     'blocking'    => true,
                     'headers'     => array( 'Content-Type' => 'application/json' ),
                     'body'        => $item['body'],
                     'data_format' => 'body',
                 ) );
+
+                if ( is_wp_error( $response ) ) {
+                    if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                        error_log( '[kw-security] Slack alert delivery failed: ' . $response->get_error_message() );
+                    }
+                    continue; // Leave dedupe unset so a later event can retry.
+                }
+
+                $code = (int) wp_remote_retrieve_response_code( $response );
+                if ( $code < 200 || $code >= 300 ) {
+                    if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                        error_log( '[kw-security] Slack alert rejected (HTTP ' . $code . ')' );
+                    }
+                    continue;
+                }
+
+                // Delivered — now suppress identical repeats for the window.
+                if ( ! empty( $item['key'] ) ) {
+                    set_transient( $item['key'], 1, self::DEDUPE_WINDOW );
+                }
             }
         }
 
@@ -376,7 +414,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 if ( '' === $v || null === $v ) {
                     continue;
                 }
-                $text .= "\n• *" . self::esc_slack( (string) $k ) . ":* " . self::esc_slack( (string) $v );
+                $text .= "\n• *" . self::esc_slack( (string) $k ) . ":* " . self::esc_slack( self::truncate( (string) $v, 400 ) );
             }
 
             return array(
@@ -410,6 +448,54 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 array( '&amp;', '&lt;', '&gt;' ),
                 (string) $text
             );
+        }
+
+        /**
+         * A webhook URL must be an HTTPS Slack-hosted endpoint. Prevents an
+         * admin (or a tampered option) from repointing security-event payloads
+         * at an arbitrary or internal host (SSRF / data exfiltration).
+         *
+         * @param string $url
+         * @return bool
+         */
+        public static function is_valid_webhook( $url ) {
+            $url = (string) $url;
+            if ( '' === $url ) {
+                return false;
+            }
+            $parts = wp_parse_url( $url );
+            return ! empty( $parts['scheme'] ) && 'https' === strtolower( $parts['scheme'] )
+                && ! empty( $parts['host'] ) && 'hooks.slack.com' === strtolower( $parts['host'] );
+        }
+
+        /**
+         * Build the de-dupe transient key. Burst-prone categories collapse to a
+         * single alert per window regardless of headline (so a botnet rotating
+         * IPs can't flood the channel); others include the headline.
+         *
+         * @param string $category
+         * @param string $title
+         * @return string
+         */
+        private static function dedupe_key( $category, $title ) {
+            $burst = array( 'login_lockout', 'login_blocked' );
+            $basis = in_array( $category, $burst, true ) ? $category : ( $category . '|' . $title );
+            return 'kw_slack_seen_' . md5( $basis );
+        }
+
+        /**
+         * Length-cap a string (multibyte-aware), appending an ellipsis when cut.
+         *
+         * @param string $text
+         * @param int    $len
+         * @return string
+         */
+        private static function truncate( $text, $len ) {
+            $text = (string) $text;
+            if ( function_exists( 'mb_strlen' ) ) {
+                return mb_strlen( $text ) > $len ? mb_substr( $text, 0, $len ) . '…' : $text;
+            }
+            return strlen( $text ) > $len ? substr( $text, 0, $len ) . '…' : $text;
         }
 
         // ----------------------------------------------------------------
@@ -629,7 +715,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             }
             $this->notify(
                 'security_disabled',
-                sprintf( '%d KW Security defense(s) switched off', count( $disabled ) ),
+                sprintf( 'KW Security defense(s) switched off: %s', implode( ', ', $disabled ) ),
                 array(
                     'Disabled'   => implode( ', ', $disabled ),
                     'Changed by' => $this->current_user_label(),
@@ -808,64 +894,6 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
-         * Real-time Wordfence security event (admin login, lockout, IP block).
-         * Maps Wordfence's event types to our category keys. Defensive: the
-         * $details shape varies by Wordfence version, so values are extracted
-         * leniently and unmapped events are ignored. Mapping is filterable.
-         *
-         * @param string $event   Wordfence event type, e.g. 'loginLockout'.
-         * @param array  $details Event data (may include ip, username, …).
-         */
-        public function on_wordfence_event( $event = '', $details = array() ) {
-            if ( ! is_string( $event ) || '' === $event ) {
-                return;
-            }
-            $details = is_array( $details ) ? $details : array();
-
-            $map = (array) apply_filters( 'kw_slack_wordfence_event_map', array(
-                'adminLogin'            => 'admin_login',
-                'adminLoginNewLocation' => 'admin_login_new_ip',
-                'loginLockout'          => 'login_lockout',
-                'block'                 => 'login_blocked',
-            ) );
-            if ( ! isset( $map[ $event ] ) ) {
-                return;
-            }
-            $category = $map[ $event ];
-
-            $ip = '';
-            foreach ( array( 'ip', 'IP' ) as $k ) {
-                if ( ! empty( $details[ $k ] ) ) {
-                    $ip = (string) $details[ $k ];
-                    break;
-                }
-            }
-            $user = '';
-            foreach ( array( 'username', 'user', 'userLogin', 'name' ) as $k ) {
-                if ( ! empty( $details[ $k ] ) ) {
-                    $user = (string) $details[ $k ];
-                    break;
-                }
-            }
-
-            $titles = array(
-                'admin_login'        => 'Wordfence: administrator signed in',
-                'admin_login_new_ip' => 'Wordfence: administrator signed in from a new location',
-                'login_lockout'      => 'Wordfence: IP locked out (brute-force)',
-                'login_blocked'      => 'Wordfence: login attempt from a blocked IP',
-            );
-
-            $this->notify(
-                $category,
-                isset( $titles[ $category ] ) ? $titles[ $category ] : ( 'Wordfence: ' . $event ),
-                array(
-                    'User' => $user,
-                    'IP'   => $ip,
-                )
-            );
-        }
-
-        /**
          * Relay a Wordfence alert email to Slack. Hooked on the core wp_mail
          * filter, so it fires for any outgoing mail; it returns $atts
          * unchanged (never blocks the email) and only forwards mail that is
@@ -907,10 +935,11 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             }
 
             // Route scan-finding emails into their specific categories; fall
-            // back to the generic wordfence_alert. Real-time login/lockout/block
-            // emails are skipped here because the security-event action already
-            // relays them (prevents double-alerting).
-            $hay     = strtolower( $subject . ' ' . $message );
+            // back to the generic wordfence_alert. Login/lockout emails are
+            // skipped because those events are detected natively. Match on the
+            // subject (Wordfence subjects are distinctive) to avoid misrouting
+            // on incidental body wording.
+            $hay     = strtolower( $subject );
             $routes  = (array) apply_filters( 'kw_slack_wordfence_email_routes', array(
                 'malware'                => array( 'malware', 'infected', 'backdoor', 'trojan', 'malicious' ),
                 'file_changed'           => array( 'file change', 'unknown file', 'modified', 'core file', 'contents have changed' ),
@@ -932,7 +961,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 $realtime = (array) apply_filters( 'kw_slack_wordfence_email_skip', array( 'signed in', 'logged in', ' login', 'locked out', 'lockout', 'blocked' ) );
                 foreach ( $realtime as $kw ) {
                     if ( '' !== $kw && false !== strpos( $hay, strtolower( $kw ) ) ) {
-                        return $atts; // handled by on_wordfence_event
+                        return $atts; // login/lockout detected natively — don't relay the WF email too.
                     }
                 }
             }

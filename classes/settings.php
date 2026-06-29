@@ -210,7 +210,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             // Slack Incoming Webhook URL for security alerts.
             register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_WEBHOOK, array(
                 'type'              => 'string',
-                'sanitize_callback' => 'esc_url_raw',
+                'sanitize_callback' => array( $this, 'sanitize_slack_webhook' ),
                 'default'           => '',
             ) );
 
@@ -336,6 +336,31 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
          * @param mixed $value
          * @return string
          */
+        /**
+         * Sanitize the Slack webhook URL. Must be an HTTPS hooks.slack.com
+         * address — anything else is rejected (not just format-validated) to
+         * prevent repointing security payloads at an arbitrary/internal host.
+         *
+         * @param mixed $value
+         * @return string
+         */
+        public function sanitize_slack_webhook( $value ) {
+            $value = esc_url_raw( trim( (string) $value ) );
+            if ( '' === $value ) {
+                return '';
+            }
+            if ( ! KW_Security_Alerts::is_valid_webhook( $value ) ) {
+                add_settings_error(
+                    self::OPTION_NAME,
+                    'kw_slack_webhook_invalid',
+                    __( 'Slack webhook URL must be a https://hooks.slack.com/… address. The value was not saved.', 'kw-security' ),
+                    'error'
+                );
+                return '';
+            }
+            return $value;
+        }
+
         public function sanitize_slack_mention( $value ) {
             $value = is_string( $value ) ? $value : '';
             $value = preg_replace( '/[\r\n\t]+/', ' ', $value );
@@ -539,7 +564,12 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
 
         public function render_slack_webhook() {
             $overridden = KW_Security_Alerts::is_webhook_overridden();
-            $value      = $overridden ? KW_Security_Alerts::get_webhook_url() : get_option( KW_Security_Alerts::OPTION_WEBHOOK, '' );
+            // When sourced from a constant/env, never echo the real URL into the
+            // DOM — keep the secret out of page source. The field is read-only.
+            $value       = $overridden ? '' : get_option( KW_Security_Alerts::OPTION_WEBHOOK, '' );
+            $placeholder = $overridden
+                ? esc_attr__( '•••••••• (set via constant / environment)', 'kw-security' )
+                : 'https://hooks.slack.com/services/...';
             ?>
             <input
                 type="url"
@@ -547,7 +577,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 name="<?php echo esc_attr( KW_Security_Alerts::OPTION_WEBHOOK ); ?>"
                 value="<?php echo esc_attr( $value ); ?>"
                 class="regular-text"
-                placeholder="https://hooks.slack.com/services/..."
+                placeholder="<?php echo esc_attr( $placeholder ); ?>"
                 autocomplete="off"
                 spellcheck="false"
                 <?php disabled( $overridden ); ?>
