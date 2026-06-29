@@ -989,7 +989,9 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             if ( ! $user || ! $user->exists() ) {
                 return 'system/guest';
             }
-            return $user->user_login;
+            return $user->user_email
+                ? $user->user_login . ' (' . $user->user_email . ')'
+                : $user->user_login;
         }
 
         private function client_ip() {
