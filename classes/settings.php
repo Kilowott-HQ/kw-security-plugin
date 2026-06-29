@@ -228,6 +228,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => KW_Security_Alerts::get_default_categories(),
             ) );
 
+            // File Integrity alert recipients (comma-separated emails).
+            // Empty = no email sent (Slack/webhook listeners still receive
+            // the kw_file_integrity_anomaly action).
+            register_setting( self::SETTINGS_GROUP, KW_File_Integrity::OPTION_RECIPIENTS, array(
+                'type'              => 'string',
+                'sanitize_callback' => array( $this, 'sanitize_file_integrity_recipients' ),
+                'default'           => '',
+            ) );
+
             // ---- Section 1: Feature toggles ----------------------------
             add_settings_section(
                 'kw_security_features_section',
@@ -277,6 +286,22 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 array( $this, 'render_whl_redirect' ),
                 self::PAGE_SLUG,
                 'kw_security_hide_login_section'
+            );
+
+            // ---- File Integrity Configuration --------------------------
+            add_settings_section(
+                'kw_security_file_integrity_section',
+                __( 'File Integrity Configuration', 'kw-security' ),
+                array( $this, 'file_integrity_section_desc' ),
+                self::PAGE_SLUG
+            );
+
+            add_settings_field(
+                KW_File_Integrity::OPTION_RECIPIENTS,
+                '<label for="kw_file_integrity_recipients">' . esc_html__( 'Alert recipients', 'kw-security' ) . '</label>',
+                array( $this, 'render_file_integrity_recipients' ),
+                self::PAGE_SLUG,
+                'kw_security_file_integrity_section'
             );
 
             // ---- Section 3: Maintenance API ----------------------------
@@ -384,6 +409,29 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 $clean[ $key ] = ! empty( $input[ $key ] );
             }
             return $clean;
+        }
+
+        /**
+         * Sanitize the File Integrity recipients field. Accepts a free-form
+         * comma/semicolon/whitespace-separated string. Invalid entries are
+         * silently dropped; the cleaned value is re-joined with ", " for
+         * stable display. Empty result is allowed (means: don't send email).
+         *
+         * @param mixed $value
+         * @return string
+         */
+        public function sanitize_file_integrity_recipients( $value ) {
+            $value = is_string( $value ) ? $value : '';
+            $parts = preg_split( '/[\s,;]+/', $value );
+            $clean = array();
+            foreach ( (array) $parts as $email ) {
+                $email = sanitize_email( trim( $email ) );
+                if ( $email && is_email( $email ) ) {
+                    $clean[] = $email;
+                }
+            }
+            $clean = array_values( array_unique( $clean ) );
+            return implode( ', ', $clean );
         }
 
         /**
@@ -533,6 +581,21 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             <?php
         }
 
+        public function file_integrity_section_desc() {
+            if ( ! self::is_enabled( 'file_integrity' ) ) {
+                echo '<p><em>'
+                    . esc_html__( 'File Integrity Monitoring is currently disabled. Enable the toggle above and save to activate daily scans.', 'kw-security' )
+                    . '</em></p>';
+                return;
+            }
+            echo '<p>'
+                . esc_html__( 'Choose who receives the email alert when an integrity anomaly is detected. Leave blank to suppress emails entirely (Slack Security Alerts still fire if enabled).', 'kw-security' )
+                . '</p>';
+            echo '<p class="description">'
+                . esc_html__( 'wp-config.php is hashed AFTER stripping volatile constants (WP_DEBUG, WP_CACHE, memory limits, etc.) so toggling debug or host-injected lines no longer triggers a false alarm. Custom volatile constants can be added via the kw_file_integrity_volatile_constants filter.', 'kw-security' )
+                . '</p>';
+        }
+
         public function maintenance_section_desc() {
             if ( ! self::is_enabled( 'maintenance_api' ) ) {
                 echo '<p><em>'
@@ -680,6 +743,25 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             }
 
             echo '</details>';
+        }
+
+        public function render_file_integrity_recipients() {
+            $value = (string) get_option( KW_File_Integrity::OPTION_RECIPIENTS, '' );
+            ?>
+            <input
+                type="text"
+                id="kw_file_integrity_recipients"
+                name="<?php echo esc_attr( KW_File_Integrity::OPTION_RECIPIENTS ); ?>"
+                value="<?php echo esc_attr( $value ); ?>"
+                class="large-text"
+                placeholder="security@example.com, ops@example.com"
+                autocomplete="off"
+                spellcheck="false"
+            />
+            <p class="description">
+                <?php esc_html_e( 'Comma-separated email addresses. Invalid entries are silently dropped on save. Leave blank to disable email alerts (Slack will still receive notifications if configured).', 'kw-security' ); ?>
+            </p>
+            <?php
         }
 
         public function render_maintenance_key() {
