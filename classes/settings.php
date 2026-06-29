@@ -55,6 +55,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         public static function get_defaults() {
             return array(
                 'activity_log'      => true,
+                'slack_alerts'      => true,
                 'comments'          => true,
                 'file_security'     => true,
                 'update_management' => true,
@@ -101,6 +102,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'activity_log' => array(
                     'label'       => __( 'Activity Log', 'kw-security' ),
                     'description' => __( 'Records security-relevant events (logins, logouts, failed logins, plugin/theme changes, post edits, file uploads, and settings saves) to a database log. View the log at <a href="options-general.php?page=kw-activity-log">Settings → Activity Log</a>.', 'kw-security' ),
+                ),
+                'slack_alerts' => array(
+                    'label'       => __( 'Slack Security Alerts', 'kw-security' ),
+                    'description' => __( 'Sends critical security events — brute-force lockouts, administrator privilege changes, blocked malicious uploads, file-integrity anomalies, and disabled defenses — to a Slack channel via an Incoming Webhook. Configure the webhook and choose which events to send below (or via the <code>KW_SLACK_WEBHOOK_URL</code> constant / environment variable). Inert until a webhook URL is set.', 'kw-security' ),
                 ),
                 'comments' => array(
                     'label'       => __( 'Disable Comments', 'kw-security' ),
@@ -202,6 +207,27 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => '',
             ) );
 
+            // Slack Incoming Webhook URL for security alerts.
+            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_WEBHOOK, array(
+                'type'              => 'string',
+                'sanitize_callback' => array( $this, 'sanitize_slack_webhook' ),
+                'default'           => '',
+            ) );
+
+            // Slack member IDs to @-mention on every alert (CSV).
+            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_MENTION, array(
+                'type'              => 'string',
+                'sanitize_callback' => array( $this, 'sanitize_slack_mention' ),
+                'default'           => '',
+            ) );
+
+            // Which alert categories to forward to Slack.
+            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_CATEGORIES, array(
+                'type'              => 'array',
+                'sanitize_callback' => array( $this, 'sanitize_slack_categories' ),
+                'default'           => KW_Security_Alerts::get_default_categories(),
+            ) );
+
             // ---- Section 1: Feature toggles ----------------------------
             add_settings_section(
                 'kw_security_features_section',
@@ -268,6 +294,96 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 self::PAGE_SLUG,
                 'kw_security_maintenance_section'
             );
+
+            // ---- Section 4: Slack Security Alerts ----------------------
+            add_settings_section(
+                'kw_security_slack_section',
+                __( 'Slack Security Alerts', 'kw-security' ),
+                array( $this, 'slack_section_desc' ),
+                self::PAGE_SLUG
+            );
+
+            add_settings_field(
+                KW_Security_Alerts::OPTION_WEBHOOK,
+                '<label for="kw_slack_webhook">' . esc_html__( 'Webhook URL', 'kw-security' ) . '</label>',
+                array( $this, 'render_slack_webhook' ),
+                self::PAGE_SLUG,
+                'kw_security_slack_section'
+            );
+
+            add_settings_field(
+                KW_Security_Alerts::OPTION_MENTION,
+                '<label for="kw_slack_mention">' . esc_html__( 'Notify (mention)', 'kw-security' ) . '</label>',
+                array( $this, 'render_slack_mention' ),
+                self::PAGE_SLUG,
+                'kw_security_slack_section'
+            );
+
+            add_settings_field(
+                KW_Security_Alerts::OPTION_CATEGORIES,
+                esc_html__( 'Events to send', 'kw-security' ),
+                array( $this, 'render_slack_categories' ),
+                self::PAGE_SLUG,
+                'kw_security_slack_section'
+            );
+        }
+
+        /**
+         * Sanitize the Slack mention CSV. Kept on a single line and length
+         * capped; Slack mention syntax (<@…>, <!…>, @here) is preserved
+         * rather than tag-stripped.
+         *
+         * @param mixed $value
+         * @return string
+         */
+        /**
+         * Sanitize the Slack webhook URL. Must be an HTTPS hooks.slack.com
+         * address — anything else is rejected (not just format-validated) to
+         * prevent repointing security payloads at an arbitrary/internal host.
+         *
+         * @param mixed $value
+         * @return string
+         */
+        public function sanitize_slack_webhook( $value ) {
+            $value = esc_url_raw( trim( (string) $value ) );
+            if ( '' === $value ) {
+                return '';
+            }
+            if ( ! KW_Security_Alerts::is_valid_webhook( $value ) ) {
+                add_settings_error(
+                    self::OPTION_NAME,
+                    'kw_slack_webhook_invalid',
+                    __( 'Slack webhook URL must be a https://hooks.slack.com/… address. The value was not saved.', 'kw-security' ),
+                    'error'
+                );
+                return '';
+            }
+            return $value;
+        }
+
+        public function sanitize_slack_mention( $value ) {
+            $value = is_string( $value ) ? $value : '';
+            $value = preg_replace( '/[\r\n\t]+/', ' ', $value );
+            $value = trim( $value );
+            if ( strlen( $value ) > 500 ) {
+                $value = substr( $value, 0, 500 );
+            }
+            return $value;
+        }
+
+        /**
+         * Sanitize the Slack alert-category checklist. Anything missing from
+         * input is treated as unchecked (false).
+         *
+         * @param mixed $input
+         * @return array<string,bool>
+         */
+        public function sanitize_slack_categories( $input ) {
+            $clean = array();
+            foreach ( array_keys( KW_Security_Alerts::get_categories() ) as $key ) {
+                $clean[ $key ] = ! empty( $input[ $key ] );
+            }
+            return $clean;
         }
 
         /**
@@ -431,6 +547,93 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             echo '<p>'
                 . esc_html__( 'Endpoint: ', 'kw-security' )
                 . '<code>' . esc_html( $endpoint ) . '</code>'
+                . '</p>';
+        }
+
+        public function slack_section_desc() {
+            if ( ! self::is_enabled( 'slack_alerts' ) ) {
+                echo '<p><em>'
+                    . esc_html__( 'Slack Security Alerts are currently disabled. Enable the "Slack Security Alerts" toggle above and save to activate them.', 'kw-security' )
+                    . '</em></p>';
+                return;
+            }
+            echo '<p>'
+                . wp_kses_post( __( 'Create an Incoming Webhook at <code>api.slack.com/apps</code> (Incoming Webhooks → Add New Webhook to Workspace) and choose the target channel there. Paste the resulting URL below. The channel is bound to the webhook — to change channels, create a new webhook and swap the URL.', 'kw-security' ) )
+                . '</p>';
+        }
+
+        public function render_slack_webhook() {
+            $overridden = KW_Security_Alerts::is_webhook_overridden();
+            // When sourced from a constant/env, never echo the real URL into the
+            // DOM — keep the secret out of page source. The field is read-only.
+            $value       = $overridden ? '' : get_option( KW_Security_Alerts::OPTION_WEBHOOK, '' );
+            $placeholder = $overridden
+                ? esc_attr__( '•••••••• (set via constant / environment)', 'kw-security' )
+                : 'https://hooks.slack.com/services/...';
+            ?>
+            <input
+                type="url"
+                id="kw_slack_webhook"
+                name="<?php echo esc_attr( KW_Security_Alerts::OPTION_WEBHOOK ); ?>"
+                value="<?php echo esc_attr( $value ); ?>"
+                class="regular-text"
+                placeholder="<?php echo esc_attr( $placeholder ); ?>"
+                autocomplete="off"
+                spellcheck="false"
+                <?php disabled( $overridden ); ?>
+            />
+            <p class="description">
+                <?php
+                if ( $overridden ) {
+                    echo esc_html__( 'Set by the KW_SLACK_WEBHOOK_URL constant or environment variable — this field is read-only and the constant/env value takes precedence.', 'kw-security' );
+                } else {
+                    echo esc_html__( 'Stored in the database. For better secrecy, define KW_SLACK_WEBHOOK_URL in wp-config.php (or as an environment variable) instead — it overrides this field and never lives in the database.', 'kw-security' );
+                }
+                ?>
+            </p>
+            <?php
+        }
+
+        public function render_slack_mention() {
+            $overridden = KW_Security_Alerts::is_mention_overridden();
+            $value      = $overridden ? KW_Security_Alerts::get_mention_string() : get_option( KW_Security_Alerts::OPTION_MENTION, '' );
+            ?>
+            <input
+                type="text"
+                id="kw_slack_mention"
+                name="<?php echo esc_attr( KW_Security_Alerts::OPTION_MENTION ); ?>"
+                value="<?php echo esc_attr( $value ); ?>"
+                class="regular-text"
+                placeholder="U012ABCDEF, U345GHIJKL"
+                autocomplete="off"
+                spellcheck="false"
+                <?php disabled( $overridden ); ?>
+            />
+            <p class="description">
+                <?php
+                if ( $overridden ) {
+                    echo esc_html__( 'Set by the KW_SLACK_MENTION constant or environment variable — this field is read-only.', 'kw-security' );
+                } else {
+                    echo wp_kses_post( __( 'Comma-separated Slack <strong>member IDs</strong> to @-mention on every alert — find one via a Slack profile → <em>More</em> → <em>Copy member ID</em> (e.g. <code>U012ABCDEF</code>). <code>@here</code> and <code>@channel</code> also work. A plain display name like <code>@jason</code> will appear in the message but will <strong>not</strong> notify — Slack only pings by member ID.', 'kw-security' ) );
+                }
+                ?>
+            </p>
+            <?php
+        }
+
+        public function render_slack_categories() {
+            $enabled = KW_Security_Alerts::get_enabled_categories();
+            foreach ( KW_Security_Alerts::get_categories() as $key => $label ) {
+                $name = KW_Security_Alerts::OPTION_CATEGORIES . '[' . $key . ']';
+                printf(
+                    '<label style="display:block;margin:2px 0;"><input type="checkbox" name="%s" value="1"%s /> %s</label>',
+                    esc_attr( $name ),
+                    checked( ! empty( $enabled[ $key ] ), true, false ),
+                    esc_html( $label )
+                );
+            }
+            echo '<p class="description">'
+                . esc_html__( 'Only the checked event types are sent to Slack. Every type is a genuine breach indicator, so all are enabled by default.', 'kw-security' )
                 . '</p>';
         }
 

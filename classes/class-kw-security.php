@@ -334,12 +334,14 @@ if (!class_exists('KW_Security')) {
             // Block if extension is dangerous
             if (in_array($file_extension, $dangerous_extensions)) {
                 $file['error'] = 'File type not allowed for security reasons.';
+                do_action('kw_upload_blocked', $filename, $file['error']);
                 return $file;
             }
 
             // Additional check for files without extensions
             if (empty($file_extension)) {
                 $file['error'] = 'Files without extensions are not allowed.';
+                do_action('kw_upload_blocked', $filename, $file['error']);
                 return $file;
             }
 
@@ -349,6 +351,7 @@ if (!class_exists('KW_Security')) {
                 foreach ($filename_parts as $part) {
                     if (in_array(strtolower($part), $dangerous_extensions)) {
                         $file['error'] = 'Files with multiple extensions are not allowed.';
+                        do_action('kw_upload_blocked', $filename, $file['error']);
                         return $file;
                     }
                 }

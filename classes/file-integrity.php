@@ -142,6 +142,9 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
 
             if ( ! $silent && ( ! empty( $unknown ) || ! empty( $modified ) ) ) {
                 $this->send_alert( $unknown, $modified );
+
+                // Notify listeners (e.g. Slack alerts) of the same anomalies.
+                do_action( 'kw_file_integrity_anomaly', $unknown, $modified );
             }
 
             return array( 'unknown' => $unknown, 'modified' => $modified );
