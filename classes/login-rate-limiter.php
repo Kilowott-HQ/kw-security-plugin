@@ -87,6 +87,9 @@ if ( ! class_exists( 'KW_Login_Rate_Limiter' ) ) {
 
             $lock_until = get_transient( $key );
             if ( $lock_until && $lock_until > time() ) {
+                // Notify listeners (e.g. Slack alerts) that a locked IP keeps trying.
+                do_action( 'kw_login_blocked', $ip, $username );
+
                 $minutes_left = max( 1, (int) ceil( ( $lock_until - time() ) / 60 ) );
                 return new WP_Error(
                     'kw_login_locked',
@@ -122,6 +125,9 @@ if ( ! class_exists( 'KW_Login_Rate_Limiter' ) ) {
                 $lock_key = 'kw_login_lock_' . $ip_key;
                 set_transient( $lock_key, time() + self::LOCKOUT_WINDOW, self::LOCKOUT_WINDOW );
                 delete_transient( $count_key );
+
+                // Notify listeners (e.g. Slack alerts) that this IP is now locked.
+                do_action( 'kw_login_lockout', $ip, $count, $username );
             }
         }
 
