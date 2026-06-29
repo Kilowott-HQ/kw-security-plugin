@@ -37,6 +37,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         const OPTION_WEBHOOK    = 'kw_slack_webhook';
         const OPTION_CATEGORIES = 'kw_slack_alert_categories';
         const OPTION_MENTION    = 'kw_slack_mention';
+        const OPTION_FM_BASELINE = 'kw_slack_fm_baseline_done'; // one-time file-manager sweep flag.
         const CONST_WEBHOOK     = 'KW_SLACK_WEBHOOK_URL';
         const ENV_WEBHOOK       = 'KW_SLACK_WEBHOOK_URL';
         const CONST_MENTION     = 'KW_SLACK_MENTION';
@@ -73,6 +74,10 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
 
             // ── Plugin / credential / update signals ─────────────────────
             add_action( 'deactivated_plugin',             array( $this, 'on_plugin_deactivated' ), 10, 1 );
+            add_action( 'activated_plugin',               array( $this, 'on_plugin_activated' ),   10, 1 );
+            // One-time sweep of already-active plugins; thereafter only newly
+            // activated plugins are checked (via activated_plugin above).
+            add_action( 'admin_init', array( $this, 'maybe_baseline_file_managers' ) );
             add_action( 'wp_create_application_password', array( $this, 'on_app_password' ),       10, 4 );
             // WooCommerce REST API key creation has no post-create hook, so we
             // listen just before WC's own AJAX handler (its priority is 10).
@@ -118,8 +123,48 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 'security_disabled'  => __( 'A KW Security defense was switched off', 'kw-security' ),
                 'wordfence_deactivated' => __( 'Wordfence plugin deactivated', 'kw-security' ),
                 'plugin_update_critical' => __( 'Plugin update available — security patch or major version', 'kw-security' ),
+                'file_manager_active' => __( 'File-manager plugin active (direct file CRUD — high risk)', 'kw-security' ),
                 'wordfence_alert'    => __( 'Relay Wordfence alerts (mirrors Wordfence email alerts to Slack)', 'kw-security' ),
                 'malware'            => __( 'Malware detected', 'kw-security' ),
+            );
+        }
+
+        /**
+         * Category keys grouped under human-readable section headings, in
+         * display order. This is a presentation-only grouping consumed by the
+         * settings UI; the canonical category list remains get_categories().
+         * Any category not listed here still renders (under "Other") so a new
+         * key is never silently hidden from the settings screen.
+         *
+         * @return array<string,string[]> Section label => ordered category keys.
+         */
+        public static function get_category_groups() {
+            return array(
+                __( 'Authentication / login', 'kw-security' ) => array(
+                    'admin_login_new_ip',
+                    'admin_login',
+                    'login_lockout',
+                    'login_blocked',
+                    'password_reset',
+                ),
+                __( 'Privilege / account / credentials', 'kw-security' ) => array(
+                    'admin_granted',
+                    'admin_deleted',
+                    'app_password_created',
+                    'rest_key_generated',
+                ),
+                __( 'Files / integrity', 'kw-security' ) => array(
+                    'upload_blocked',
+                    'file_changed',
+                ),
+                __( 'Configuration / plugins / malware', 'kw-security' ) => array(
+                    'security_disabled',
+                    'wordfence_deactivated',
+                    'plugin_update_critical',
+                    'file_manager_active',
+                    'wordfence_alert',
+                    'malware',
+                ),
             );
         }
 
@@ -747,6 +792,105 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
+         * A plugin was just activated. Alert if it is a known file manager —
+         * these expose direct create/read/update/delete access to the
+         * filesystem and are a frequent post-compromise backdoor.
+         *
+         * @param string $plugin Plugin file, e.g. 'wp-file-manager/file_folder_manager.php'.
+         */
+        public function on_plugin_activated( $plugin ) {
+            $name = $this->matched_file_manager( $plugin );
+            if ( null === $name ) {
+                return;
+            }
+            $this->notify(
+                'file_manager_active',
+                sprintf( 'File-manager plugin activated: %s', $name ),
+                array(
+                    'Plugin'       => $plugin,
+                    'Activated by' => $this->current_user_label(),
+                    'IP'           => $this->client_ip(),
+                    'Risk'         => 'Grants direct file CRUD via wp-admin — verify this was intentional.',
+                )
+            );
+        }
+
+        /**
+         * One-time sweep of currently active plugins for file managers that
+         * were already installed before this plugin started watching. Guarded
+         * by an option flag so it runs once; afterwards on_plugin_activated()
+         * covers every newly activated plugin.
+         */
+        public function maybe_baseline_file_managers() {
+            if ( get_option( self::OPTION_FM_BASELINE ) ) {
+                return;
+            }
+            // Mark done first so a failure mid-loop can't re-fire the sweep on
+            // every admin request (the per-event de-dupe still guards repeats).
+            update_option( self::OPTION_FM_BASELINE, 1, false );
+
+            foreach ( (array) get_option( 'active_plugins', array() ) as $plugin ) {
+                $name = $this->matched_file_manager( $plugin );
+                if ( null === $name ) {
+                    continue;
+                }
+                $this->notify(
+                    'file_manager_active',
+                    sprintf( 'File-manager plugin already active: %s', $name ),
+                    array(
+                        'Plugin' => $plugin,
+                        'Note'   => 'Detected during initial scan of installed plugins.',
+                        'Risk'   => 'Grants direct file CRUD via wp-admin — verify this is intentional.',
+                    )
+                );
+            }
+        }
+
+        /**
+         * If the given plugin file belongs to a known file-manager plugin,
+         * return its display name; otherwise null. Matching is on the directory
+         * slug (dirname), which is stable across the varying main-file names
+         * these plugins use. The list is filterable so sites can extend it.
+         *
+         * @param string $plugin Plugin file relative to the plugins dir.
+         * @return string|null Display name when matched, else null.
+         */
+        private function matched_file_manager( $plugin ) {
+            $slug = strtolower( dirname( (string) $plugin ) );
+            if ( '' === $slug || '.' === $slug ) {
+                $slug = strtolower( basename( (string) $plugin, '.php' ) );
+            }
+
+            /**
+             * Known file-manager plugin slugs => display name.
+             *
+             * @param array<string,string> $known slug => human-readable name.
+             */
+            // Slugs verified against wordpress.org. Scope is deliberately
+            // server-filesystem CRUD file managers only — media-library folder
+            // organizers (FileBird, Real Media Library, Media Library
+            // Organizer) and download managers (Download Manager/Monitor) are a
+            // different, lower risk class and are intentionally excluded to
+            // avoid false positives. Closed/legacy slugs are retained because a
+            // still-installed copy remains exploitable.
+            $known = apply_filters( 'kw_slack_filemanager_known', array(
+                'wp-file-manager'       => 'File Manager (WP File Manager)',
+                'file-manager-advanced' => 'Advanced File Manager',
+                'advanced-file-manager' => 'Advanced File Manager',
+                'filester'              => 'File Manager Pro — Filester',
+                'fileorganizer'         => 'FileOrganizer',
+                'file-manager'          => 'File Manager',
+                'wp-filemanager'        => 'wp-FileManager (legacy/closed)',
+                'simple-file-list'      => 'Simple File List',
+                'file-away'             => 'File Away (legacy/closed)',
+                'wp-file-upload'        => 'WordPress File Upload (Iptanus)',
+                'wpide'                 => 'WPide — File Manager & Code Editor',
+            ) );
+
+            return isset( $known[ $slug ] ) ? $known[ $slug ] : null;
+        }
+
+        /**
          * An Application Password was created (a REST/API credential that can
          * act as the user). The password itself is never included.
          *
@@ -989,7 +1133,9 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             if ( ! $user || ! $user->exists() ) {
                 return 'system/guest';
             }
-            return $user->user_login;
+            return $user->user_email
+                ? $user->user_login . ' (' . $user->user_email . ')'
+                : $user->user_login;
         }
 
         private function client_ip() {

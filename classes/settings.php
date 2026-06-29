@@ -622,19 +622,64 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         }
 
         public function render_slack_categories() {
+            $labels  = KW_Security_Alerts::get_categories();
             $enabled = KW_Security_Alerts::get_enabled_categories();
-            foreach ( KW_Security_Alerts::get_categories() as $key => $label ) {
-                $name = KW_Security_Alerts::OPTION_CATEGORIES . '[' . $key . ']';
-                printf(
-                    '<label style="display:block;margin:2px 0;"><input type="checkbox" name="%s" value="1"%s /> %s</label>',
-                    esc_attr( $name ),
-                    checked( ! empty( $enabled[ $key ] ), true, false ),
-                    esc_html( $label )
-                );
+            $groups  = KW_Security_Alerts::get_category_groups();
+
+            // Append any category missing from the group map under "Other" so a
+            // newly added key is never silently dropped from the screen.
+            $grouped = array();
+            foreach ( $groups as $keys ) {
+                $grouped = array_merge( $grouped, $keys );
             }
-            echo '<p class="description">'
+            $ungrouped = array_diff( array_keys( $labels ), $grouped );
+            if ( $ungrouped ) {
+                $groups[ __( 'Other', 'kw-security' ) ] = array_values( $ungrouped );
+            }
+
+            $total       = count( $labels );
+            $enabled_cnt = count( array_filter( array_intersect_key( $enabled, $labels ) ) );
+
+            // Collapsed by default: most installs keep every event on, so the
+            // granular controls stay tucked away behind a one-line summary.
+            echo '<details class="kw-slack-categories">';
+            printf(
+                '<summary style="cursor:pointer;font-weight:600;">%s</summary>',
+                esc_html(
+                    sprintf(
+                        /* translators: 1: enabled event count, 2: total event count. */
+                        __( 'Customize which events are sent (%1$d of %2$d enabled)', 'kw-security' ),
+                        $enabled_cnt,
+                        $total
+                    )
+                )
+            );
+
+            echo '<p class="description" style="margin:8px 0 12px;">'
                 . esc_html__( 'Only the checked event types are sent to Slack. Every type is a genuine breach indicator, so all are enabled by default.', 'kw-security' )
                 . '</p>';
+
+            foreach ( $groups as $heading => $keys ) {
+                printf(
+                    '<fieldset style="margin:0 0 14px;"><legend style="font-weight:600;padding:0;margin-bottom:4px;">%s</legend>',
+                    esc_html( $heading )
+                );
+                foreach ( $keys as $key ) {
+                    if ( ! isset( $labels[ $key ] ) ) {
+                        continue;
+                    }
+                    $name = KW_Security_Alerts::OPTION_CATEGORIES . '[' . $key . ']';
+                    printf(
+                        '<label style="display:block;margin:2px 0;"><input type="checkbox" name="%s" value="1"%s /> %s</label>',
+                        esc_attr( $name ),
+                        checked( ! empty( $enabled[ $key ] ), true, false ),
+                        esc_html( $labels[ $key ] )
+                    );
+                }
+                echo '</fieldset>';
+            }
+
+            echo '</details>';
         }
 
         public function render_maintenance_key() {
