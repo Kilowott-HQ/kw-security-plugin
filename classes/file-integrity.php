@@ -62,6 +62,18 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
         );
 
         /**
+         * Schema version of the baseline format. Incremented when the way
+         * hashes are computed changes, so existing sites can migrate their
+         * stored baseline on first load after upgrade.
+         *
+         *   1 = whole-file SHA1 of every tracked file.
+         *   2 = normalized SHA1 for NORMALIZED_FILES (wp-config.php),
+         *       whole-file SHA1 for the rest.
+         */
+        const BASELINE_SCHEMA        = 2;
+        const OPTION_BASELINE_SCHEMA = 'kw_security_file_baseline_schema';
+
+        /**
          * Files expected to live in the WordPress root. Anything else
          * with a code-like extension is treated as suspicious.
          */
@@ -120,9 +132,60 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             // Auto-reset baseline after a WP core update (index.php legitimately changes).
             add_action( '_core_updated_successfully', array( $this, 'reset_baseline_silent' ) );
 
+            // Migrate stale baselines from older schemas (e.g. whole-file
+            // wp-config hash → normalized hash). Fires on admin requests only
+            // so frontend visitors don't pay the one-time scan cost.
+            add_action( 'admin_init', array( $this, 'maybe_migrate_baseline' ) );
+
             // Manual scan + reset triggers from the settings page.
             add_action( 'admin_post_kw_security_run_scan',         array( $this, 'handle_manual_scan' ) );
             add_action( 'admin_post_kw_security_reset_baseline',   array( $this, 'handle_reset_baseline' ) );
+        }
+
+        /**
+         * One-time baseline migration when the schema version stored in
+         * the database is older than the current code's BASELINE_SCHEMA.
+         *
+         * For schema 1 → 2 (this release): the wp-config.php baseline was a
+         * whole-file SHA1 and now is a normalized SHA1, so any existing
+         * baseline produces a permanent mismatch — flagging wp-config.php
+         * as modified on every scan with an empty diff. We drop the stale
+         * wp-config baseline (hash AND content cache) and re-seed it from
+         * current state via a silent scan.
+         *
+         * index.php's baseline is deliberately preserved: it was always
+         * whole-file hashed and stays so. If index.php is being concurrently
+         * tampered with at upgrade time, this migration must not bless it.
+         */
+        public function maybe_migrate_baseline() {
+            $stored = (int) get_option( self::OPTION_BASELINE_SCHEMA, 1 );
+            if ( $stored >= self::BASELINE_SCHEMA ) {
+                return;
+            }
+
+            $hashes  = get_option( self::OPTION_HASHES, array() );
+            $content = get_option( self::OPTION_BASELINE_CONTENT, array() );
+            if ( ! is_array( $hashes ) ) {
+                $hashes = array();
+            }
+            if ( ! is_array( $content ) ) {
+                $content = array();
+            }
+
+            // Drop only the baselines for files whose hashing rule changed
+            // in this schema bump. Everything else stays put.
+            foreach ( self::NORMALIZED_FILES as $relative ) {
+                unset( $hashes[ $relative ] );
+                unset( $content[ $relative ] );
+            }
+
+            update_option( self::OPTION_HASHES, $hashes, false );
+            update_option( self::OPTION_BASELINE_CONTENT, $content, false );
+            update_option( self::OPTION_BASELINE_SCHEMA, self::BASELINE_SCHEMA, false );
+
+            // Silent scan re-seeds the missing entries with the new
+            // normalized hash + content, without firing an alert.
+            $this->run_scan( true );
         }
 
         /**
