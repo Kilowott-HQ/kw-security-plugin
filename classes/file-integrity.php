@@ -35,6 +35,45 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
         const OPTION_LAST   = 'kw_security_file_last_scan';
 
         /**
+         * Option holding the comma-separated list of email recipients for
+         * integrity-alert mail. When empty, no email is sent (the
+         * kw_file_integrity_anomaly do_action still fires for Slack listeners).
+         */
+        const OPTION_RECIPIENTS = 'kw_file_integrity_recipients';
+
+        /**
+         * Stores the *normalized* baseline content for files where we strip
+         * volatile lines before hashing (currently just wp-config.php). Lets
+         * us diff against the previous content and show what actually changed.
+         *
+         * @var string
+         */
+        const OPTION_BASELINE_CONTENT = 'kw_security_file_baseline_content';
+
+        /**
+         * Files for which volatile-constant normalization applies BEFORE
+         * hashing. wp-config.php legitimately churns whenever someone toggles
+         * WP_DEBUG, a managed host injects a cache constant, etc. — so we
+         * hash the normalized version. index.php is intentionally NOT in this
+         * list: it should be invariant outside WP core updates.
+         */
+        const NORMALIZED_FILES = array(
+            'wp-config.php',
+        );
+
+        /**
+         * Schema version of the baseline format. Incremented when the way
+         * hashes are computed changes, so existing sites can migrate their
+         * stored baseline on first load after upgrade.
+         *
+         *   1 = whole-file SHA1 of every tracked file.
+         *   2 = normalized SHA1 for NORMALIZED_FILES (wp-config.php),
+         *       whole-file SHA1 for the rest.
+         */
+        const BASELINE_SCHEMA        = 2;
+        const OPTION_BASELINE_SCHEMA = 'kw_security_file_baseline_schema';
+
+        /**
          * Files expected to live in the WordPress root. Anything else
          * with a code-like extension is treated as suspicious.
          */
@@ -93,9 +132,60 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             // Auto-reset baseline after a WP core update (index.php legitimately changes).
             add_action( '_core_updated_successfully', array( $this, 'reset_baseline_silent' ) );
 
+            // Migrate stale baselines from older schemas (e.g. whole-file
+            // wp-config hash → normalized hash). Fires on admin requests only
+            // so frontend visitors don't pay the one-time scan cost.
+            add_action( 'admin_init', array( $this, 'maybe_migrate_baseline' ) );
+
             // Manual scan + reset triggers from the settings page.
             add_action( 'admin_post_kw_security_run_scan',         array( $this, 'handle_manual_scan' ) );
             add_action( 'admin_post_kw_security_reset_baseline',   array( $this, 'handle_reset_baseline' ) );
+        }
+
+        /**
+         * One-time baseline migration when the schema version stored in
+         * the database is older than the current code's BASELINE_SCHEMA.
+         *
+         * For schema 1 → 2 (this release): the wp-config.php baseline was a
+         * whole-file SHA1 and now is a normalized SHA1, so any existing
+         * baseline produces a permanent mismatch — flagging wp-config.php
+         * as modified on every scan with an empty diff. We drop the stale
+         * wp-config baseline (hash AND content cache) and re-seed it from
+         * current state via a silent scan.
+         *
+         * index.php's baseline is deliberately preserved: it was always
+         * whole-file hashed and stays so. If index.php is being concurrently
+         * tampered with at upgrade time, this migration must not bless it.
+         */
+        public function maybe_migrate_baseline() {
+            $stored = (int) get_option( self::OPTION_BASELINE_SCHEMA, 1 );
+            if ( $stored >= self::BASELINE_SCHEMA ) {
+                return;
+            }
+
+            $hashes  = get_option( self::OPTION_HASHES, array() );
+            $content = get_option( self::OPTION_BASELINE_CONTENT, array() );
+            if ( ! is_array( $hashes ) ) {
+                $hashes = array();
+            }
+            if ( ! is_array( $content ) ) {
+                $content = array();
+            }
+
+            // Drop only the baselines for files whose hashing rule changed
+            // in this schema bump. Everything else stays put.
+            foreach ( self::NORMALIZED_FILES as $relative ) {
+                unset( $hashes[ $relative ] );
+                unset( $content[ $relative ] );
+            }
+
+            update_option( self::OPTION_HASHES, $hashes, false );
+            update_option( self::OPTION_BASELINE_CONTENT, $content, false );
+            update_option( self::OPTION_BASELINE_SCHEMA, self::BASELINE_SCHEMA, false );
+
+            // Silent scan re-seeds the missing entries with the new
+            // normalized hash + content, without firing an alert.
+            $this->run_scan( true );
         }
 
         /**
@@ -121,11 +211,32 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
                 $baseline = array();
             }
 
-            // Detect modifications — only flag files that exist in baseline AND have changed.
+            $baseline_content = get_option( self::OPTION_BASELINE_CONTENT, array() );
+            if ( ! is_array( $baseline_content ) ) {
+                $baseline_content = array();
+            }
+
+            // Detect modifications — only flag files that exist in baseline
+            // AND have changed. For normalized files we also compute a
+            // line-level diff so the alert can name what actually changed.
             $modified = array();
+            $changes  = array();
             foreach ( $current_hashes as $file => $hash ) {
                 if ( isset( $baseline[ $file ] ) && $baseline[ $file ] !== $hash ) {
                     $modified[] = $file;
+
+                    if (
+                        in_array( $file, self::NORMALIZED_FILES, true )
+                        && isset( $baseline_content[ $file ] )
+                    ) {
+                        $current_content = $this->read_normalized_content( $file );
+                        if ( null !== $current_content ) {
+                            $changes[ $file ] = $this->diff_normalized(
+                                (string) $baseline_content[ $file ],
+                                $current_content
+                            );
+                        }
+                    }
                 }
             }
 
@@ -137,17 +248,31 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
                     $baseline[ $file ] = $hash;
                 }
             }
+            // Same first-sighting rule for normalized baseline content — only
+            // seed the content cache when there's no entry yet, so the diff
+            // on next modification can compare against the original.
+            foreach ( self::NORMALIZED_FILES as $relative ) {
+                if ( ! isset( $baseline_content[ $relative ] ) && isset( $current_hashes[ $relative ] ) ) {
+                    $content = $this->read_normalized_content( $relative );
+                    if ( null !== $content ) {
+                        $baseline_content[ $relative ] = $content;
+                    }
+                }
+            }
+
             update_option( self::OPTION_HASHES, $baseline, false );
+            update_option( self::OPTION_BASELINE_CONTENT, $baseline_content, false );
             update_option( self::OPTION_LAST, time(), false );
 
             if ( ! $silent && ( ! empty( $unknown ) || ! empty( $modified ) ) ) {
-                $this->send_alert( $unknown, $modified );
+                $this->send_alert( $unknown, $modified, $changes );
 
                 // Notify listeners (e.g. Slack alerts) of the same anomalies.
-                do_action( 'kw_file_integrity_anomaly', $unknown, $modified );
+                // Third arg is optional — existing 2-arg listeners ignore it.
+                do_action( 'kw_file_integrity_anomaly', $unknown, $modified, $changes );
             }
 
-            return array( 'unknown' => $unknown, 'modified' => $modified );
+            return array( 'unknown' => $unknown, 'modified' => $modified, 'changes' => $changes );
         }
 
         /**
@@ -155,6 +280,7 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
          */
         public function reset_baseline_silent() {
             delete_option( self::OPTION_HASHES );
+            delete_option( self::OPTION_BASELINE_CONTENT );
             $this->run_scan( true );
         }
 
@@ -196,16 +322,132 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
         }
 
         /**
-         * Compute current sha1 hashes of tracked files.
+         * Volatile constants whose define() lines are stripped from
+         * wp-config.php before hashing — they legitimately change for
+         * non-malicious reasons (debug toggles, host-injected cache flags,
+         * memory tweaks). DB credentials, salts, table prefix, and site URLs
+         * are deliberately NOT in this list because a change to those IS a
+         * malware indicator.
+         *
+         * Sites with host-specific volatile constants (Kinsta, WP Engine,
+         * Pantheon, etc.) can extend the list via the
+         * `kw_file_integrity_volatile_constants` filter.
+         *
+         * @return string[]
+         */
+        private function get_volatile_constants() {
+            return (array) apply_filters(
+                'kw_file_integrity_volatile_constants',
+                array(
+                    // Debug toggles
+                    'WP_DEBUG',
+                    'WP_DEBUG_LOG',
+                    'WP_DEBUG_DISPLAY',
+                    'SCRIPT_DEBUG',
+                    'WP_DISABLE_FATAL_ERROR_HANDLER',
+                    // Cache
+                    'WP_CACHE',
+                    'CONCATENATE_SCRIPTS',
+                    'COMPRESS_SCRIPTS',
+                    'COMPRESS_CSS',
+                    // Memory / performance
+                    'WP_MEMORY_LIMIT',
+                    'WP_MAX_MEMORY_LIMIT',
+                    'WP_POST_REVISIONS',
+                    'AUTOSAVE_INTERVAL',
+                    'EMPTY_TRASH_DAYS',
+                    'MEDIA_TRASH',
+                    // Updates
+                    'WP_AUTO_UPDATE_CORE',
+                    'AUTOMATIC_UPDATER_DISABLED',
+                    // Filesystem method (host may flip between direct/ssh2/ftp)
+                    'FS_METHOD',
+                    'FS_CHMOD_DIR',
+                    'FS_CHMOD_FILE',
+                    // Editor lockdown
+                    'DISALLOW_FILE_EDIT',
+                    'DISALLOW_FILE_MODS',
+                    'DISALLOW_UNFILTERED_HTML',
+                )
+            );
+        }
+
+        /**
+         * Strip define()-style lines for any of the volatile constants from
+         * wp-config content, then collapse consecutive blank lines so the
+         * hash is deterministic. Single-line defines only — multi-line
+         * defines are rare; if they trip a false positive a site can add
+         * their constant via the filter and re-baseline.
+         *
+         * Also tolerates an optional trailing line comment so e.g.
+         * `define('WP_DEBUG', true); // dev only` is stripped as a unit.
+         *
+         * @param string $content Raw file content.
+         * @return string Normalized content.
+         */
+        private function normalize_wp_config( $content ) {
+            $names = $this->get_volatile_constants();
+            if ( empty( $names ) ) {
+                return $content;
+            }
+            $alt     = implode( '|', array_map( 'preg_quote', $names ) );
+            $pattern = '/^[ \t]*define\s*\(\s*[\'"](?:' . $alt . ')[\'"][^)]*\)\s*;?[ \t]*(?:\/\/.*|#.*)?\s*\r?\n/m';
+
+            $normalized = preg_replace( $pattern, '', $content );
+            if ( null === $normalized ) {
+                // Regex failure (shouldn't happen) — fall back to raw content.
+                return $content;
+            }
+            // Collapse runs of blank lines so removing a volatile line doesn't
+            // shift the rest of the content visually for the diff.
+            $normalized = preg_replace( "/(\r?\n){2,}/", "\n", $normalized );
+            return $normalized;
+        }
+
+        /**
+         * Read a tracked file and return its content (normalized when the
+         * file is in NORMALIZED_FILES). Returns null on read failure.
+         *
+         * @param string $relative Path relative to ABSPATH.
+         * @return string|null
+         */
+        private function read_normalized_content( $relative ) {
+            $full = ABSPATH . $relative;
+            if ( ! file_exists( $full ) || ! is_readable( $full ) ) {
+                return null;
+            }
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Local file read for hashing; WP_Filesystem requires FS credentials and is unsuitable for cron-scheduled scans.
+            $content = file_get_contents( $full );
+            if ( false === $content ) {
+                return null;
+            }
+            if ( in_array( $relative, self::NORMALIZED_FILES, true ) ) {
+                return $this->normalize_wp_config( $content );
+            }
+            return $content;
+        }
+
+        /**
+         * Compute current sha1 hashes of tracked files. Files in
+         * NORMALIZED_FILES are hashed after volatile-constant normalization
+         * so e.g. flipping WP_DEBUG doesn't fire a daily alert.
          *
          * @return array<string,string>
          */
         private function compute_current_hashes() {
             $hashes = array();
             foreach ( self::HASHED_FILES as $relative ) {
+                if ( in_array( $relative, self::NORMALIZED_FILES, true ) ) {
+                    $content = $this->read_normalized_content( $relative );
+                    if ( null !== $content ) {
+                        $hashes[ $relative ] = sha1( $content );
+                    }
+                    continue;
+                }
+                // Plain whole-file hash for non-normalized files (index.php).
                 $full = ABSPATH . $relative;
                 if ( file_exists( $full ) && is_readable( $full ) ) {
-                    // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Belt-and-suspenders: file_exists + is_readable already guard, but @ swallows race-condition warnings if the file disappears between the check and the hash.
+                    // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- file_exists/is_readable already guard; @ catches race-condition warnings if the file disappears between checks.
                     $hash = @sha1_file( $full );
                     if ( false !== $hash ) {
                         $hashes[ $relative ] = $hash;
@@ -216,13 +458,71 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
         }
 
         /**
-         * Send anomaly alert to the site admin email.
+         * Diff two normalized file contents and return a compact summary
+         * of added/removed lines (max 10 of each). Lines existing in both
+         * but reordered count as added+removed; that's fine for an alert
+         * preview where the goal is "did something suspicious slip in?".
          *
-         * @param array<string> $unknown
-         * @param array<string> $modified
+         * @param string $before
+         * @param string $after
+         * @return array{added: array<string>, removed: array<string>}
          */
-        private function send_alert( $unknown, $modified ) {
-            $to      = get_option( 'admin_email' );
+        private function diff_normalized( $before, $after ) {
+            $before_lines = array_map( 'trim', preg_split( "/\r?\n/", (string) $before ) );
+            $after_lines  = array_map( 'trim', preg_split( "/\r?\n/", (string) $after ) );
+
+            // Drop empty lines from comparison — they're noise, not signal.
+            $before_lines = array_values( array_filter( $before_lines, 'strlen' ) );
+            $after_lines  = array_values( array_filter( $after_lines, 'strlen' ) );
+
+            $added   = array_values( array_diff( $after_lines, $before_lines ) );
+            $removed = array_values( array_diff( $before_lines, $after_lines ) );
+
+            return array(
+                'added'   => array_slice( $added, 0, 10 ),
+                'removed' => array_slice( $removed, 0, 10 ),
+            );
+        }
+
+        /**
+         * Parse the configured recipient option into a list of valid email
+         * addresses. Returns an empty array when no recipients are configured
+         * — in that case no email is sent (the kw_file_integrity_anomaly
+         * action still fires for Slack listeners).
+         *
+         * @return string[]
+         */
+        private function get_recipients() {
+            $raw = (string) get_option( self::OPTION_RECIPIENTS, '' );
+            if ( '' === $raw ) {
+                return array();
+            }
+            $parts = preg_split( '/[\s,;]+/', $raw );
+            $clean = array();
+            foreach ( (array) $parts as $email ) {
+                $email = sanitize_email( trim( $email ) );
+                if ( $email && is_email( $email ) ) {
+                    $clean[] = $email;
+                }
+            }
+            return array_values( array_unique( $clean ) );
+        }
+
+        /**
+         * Send anomaly alert email to the configured recipients. Returns
+         * silently when no recipients are configured — by design, so a fresh
+         * install doesn't spam admin_email until someone fills the field.
+         *
+         * @param array<string>                                                  $unknown
+         * @param array<string>                                                  $modified
+         * @param array<string,array{added:array<string>,removed:array<string>}> $changes  Per-file line diff, normalized files only.
+         */
+        private function send_alert( $unknown, $modified, $changes = array() ) {
+            $recipients = $this->get_recipients();
+            if ( empty( $recipients ) ) {
+                return; // No recipients configured — Slack/webhook listeners still receive the do_action.
+            }
+
             $site    = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
             $subject = sprintf( '[KW Security] File integrity alert: %s', $site );
 
@@ -243,14 +543,36 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
                 $body .= "Modified core files (hash changed since baseline):\n";
                 foreach ( $modified as $file ) {
                     $body .= '  - ' . $file . "\n";
+
+                    // Include the line-level diff if we have one (currently
+                    // wp-config.php only). Helps the recipient verify in
+                    // seconds whether the change looks like malware or a
+                    // legitimate host/admin tweak.
+                    if ( isset( $changes[ $file ] ) ) {
+                        $diff = $changes[ $file ];
+                        if ( ! empty( $diff['added'] ) ) {
+                            $body .= "      Added lines:\n";
+                            foreach ( $diff['added'] as $line ) {
+                                $body .= '        + ' . $line . "\n";
+                            }
+                        }
+                        if ( ! empty( $diff['removed'] ) ) {
+                            $body .= "      Removed lines:\n";
+                            foreach ( $diff['removed'] as $line ) {
+                                $body .= '        - ' . $line . "\n";
+                            }
+                        }
+                    }
                 }
                 $body .= "\nThese files have been modified since the baseline was set. ";
-                $body .= "If you did not change them, restore from backup or compare against a clean WordPress install.\n\n";
+                $body .= "If you did not change them, restore from backup or compare against a clean WordPress install.\n";
+                $body .= "If the change is legitimate (e.g. a host-injected constant), add it to the\n";
+                $body .= "kw_file_integrity_volatile_constants filter and reset the baseline from Settings.\n\n";
             }
 
             $body .= 'Manage scan results: ' . admin_url( 'options-general.php?page=kw-security' ) . "\n";
 
-            wp_mail( $to, $subject, $body );
+            wp_mail( $recipients, $subject, $body );
         }
 
         /**
@@ -262,11 +584,21 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
                 wp_die();
             }
 
-            $result = $this->run_scan();
-            $count  = count( $result['unknown'] ) + count( $result['modified'] );
-            $msg    = $count > 0
-                ? sprintf( /* translators: %d: number of anomalies */ esc_html__( 'Scan complete. %d anomaly/anomalies detected and email sent to site admin.', 'kw-security' ), $count )
-                : esc_html__( 'Scan complete. No anomalies detected.', 'kw-security' );
+            $result     = $this->run_scan();
+            $count      = count( $result['unknown'] ) + count( $result['modified'] );
+            $recipients = $this->get_recipients();
+            if ( $count > 0 ) {
+                $msg = empty( $recipients )
+                    ? sprintf( /* translators: %d: number of anomalies */ esc_html__( 'Scan complete. %d anomaly/anomalies detected (no email sent — no recipients configured).', 'kw-security' ), $count )
+                    : sprintf(
+                        /* translators: 1: number of anomalies, 2: number of recipients */
+                        esc_html__( 'Scan complete. %1$d anomaly/anomalies detected; alert emailed to %2$d recipient(s).', 'kw-security' ),
+                        $count,
+                        count( $recipients )
+                    );
+            } else {
+                $msg = esc_html__( 'Scan complete. No anomalies detected.', 'kw-security' );
+            }
 
             wp_safe_redirect( add_query_arg(
                 array( 'kw_scan' => rawurlencode( $msg ) ),
@@ -285,6 +617,7 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             }
 
             delete_option( self::OPTION_HASHES );
+            delete_option( self::OPTION_BASELINE_CONTENT );
             $this->run_scan( true );
 
             wp_safe_redirect( add_query_arg(
