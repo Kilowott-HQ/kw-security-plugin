@@ -41,13 +41,6 @@ if (!class_exists('KW_Security')) {
                 add_action('init', array($this, 'disable_file_editing'));
                 add_filter('upload_mimes', array($this, 'restrict_file_uploads'));
                 add_filter('wp_handle_upload_prefilter', array($this, 'block_dangerous_uploads'));
-
-                // On Nginx the .htaccess written at activation has no effect — show a
-                // persistent admin notice with the equivalent Nginx location block instead.
-                if ('nginx' === self::detect_server()) {
-                    add_action('admin_notices', array($this, 'nginx_upload_notice'));
-                }
-                add_action('admin_post_kw_nginx_notice_dismiss', array($this, 'handle_nginx_notice_dismiss'));
             }
 
             // Comment system disable
@@ -384,85 +377,14 @@ if (!class_exists('KW_Security')) {
          *
          * Apache / LiteSpeed: write the .htaccess (existing behaviour).
          * Nginx / OpenResty:  skip the file — Nginx ignores .htaccess entirely.
-         *                     An admin notice (nginx_upload_notice) surfaces the
-         *                     equivalent location block to add server-side.
+         *                     Upload PHP-execution must be blocked in the server
+         *                     config; the normal upload filters still apply.
          */
         public function setup_upload_protection() {
             if ( 'nginx' === self::detect_server() ) {
                 return;
             }
             $this->create_upload_htaccess();
-        }
-
-        /**
-         * Admin notice shown on Nginx servers when file_security is enabled.
-         *
-         * Shown on all admin pages (dismissible per-user) and always shown on
-         * the KW Security settings page regardless of dismissal so the config
-         * requirement is never silently forgotten.
-         */
-        public function nginx_upload_notice() {
-            if ( ! current_user_can( 'manage_options' ) ) {
-                return;
-            }
-
-            // Determine whether we are on the KW Security settings page.
-            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only page check, no state change.
-            $on_settings_page = isset( $_GET['page'] ) && sanitize_key( $_GET['page'] ) === KW_Security_Settings::PAGE_SLUG;
-
-            // Outside the settings page, respect per-user dismissal.
-            if ( ! $on_settings_page && get_user_meta( get_current_user_id(), 'kw_security_nginx_notice_dismissed', true ) ) {
-                return;
-            }
-
-            // Build the uploads URL path for the Nginx location directive.
-            $upload_info  = wp_upload_dir();
-            $uploads_path = rtrim( wp_parse_url( $upload_info['baseurl'], PHP_URL_PATH ), '/' );
-
-            $dismiss_url = wp_nonce_url(
-                admin_url( 'admin-post.php?action=kw_nginx_notice_dismiss' ),
-                'kw_nginx_notice_dismiss'
-            );
-
-            $snippet = 'location ~* ' . esc_html( $uploads_path ) . '/.*\\.(php|php3|php4|php5|phtml|phps|phar|exe|com|bat|cmd|scr|cgi|pl|sh)$ {' . "\n"
-                     . '    deny all;' . "\n"
-                     . '}';
-
-            ?>
-            <div class="notice notice-warning <?php echo $on_settings_page ? '' : 'is-dismissible'; ?>">
-                <p>
-                    <strong><?php esc_html_e( 'KW Security — Action required on Nginx: uploads directory is not protected.', 'kw-security' ); ?></strong>
-                </p>
-                <p>
-                    <?php esc_html_e( 'This site runs on Nginx (or OpenResty). Nginx ignores .htaccess files, so the uploads PHP-execution block written by KW Security has no effect. Add the following block inside your server {} configuration and reload Nginx:', 'kw-security' ); ?>
-                </p>
-                <pre style="background:#f6f7f7;border:1px solid #ddd;padding:10px 14px;overflow:auto;font-size:12px;line-height:1.6;"><?php echo esc_html( $snippet ); ?></pre>
-                <p style="color:#666;font-size:12px;">
-                    <?php esc_html_e( 'On Servebolt: paste this into the Nginx configuration panel for this site and click Save, then Activate.', 'kw-security' ); ?>
-                </p>
-                <?php if ( ! $on_settings_page ) : ?>
-                <p>
-                    <a href="<?php echo esc_url( $dismiss_url ); ?>" class="button button-secondary">
-                        <?php esc_html_e( 'Dismiss', 'kw-security' ); ?>
-                    </a>
-                </p>
-                <?php endif; ?>
-            </div>
-            <?php
-        }
-
-        /**
-         * Handle the "Dismiss" GET request from the Nginx admin notice.
-         * Stores the dismissal in per-user meta so other users still see the notice.
-         */
-        public function handle_nginx_notice_dismiss() {
-            check_admin_referer( 'kw_nginx_notice_dismiss' );
-            if ( ! current_user_can( 'manage_options' ) ) {
-                wp_die();
-            }
-            update_user_meta( get_current_user_id(), 'kw_security_nginx_notice_dismissed', 1 );
-            wp_safe_redirect( wp_get_referer() ?: admin_url() );
-            exit;
         }
 
         /**
