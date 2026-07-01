@@ -38,6 +38,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         const OPTION_CATEGORIES = 'kw_slack_alert_categories';
         const OPTION_MENTION    = 'kw_slack_mention';
         const OPTION_FM_BASELINE = 'kw_slack_fm_baseline_done'; // one-time file-manager sweep flag.
+        const OPTION_WF_CRITICAL_ONLY = 'kw_slack_wordfence_critical_only'; // relay only critical WF emails.
         const CONST_WEBHOOK     = 'KW_SLACK_WEBHOOK_URL';
         const ENV_WEBHOOK       = 'KW_SLACK_WEBHOOK_URL';
         const CONST_MENTION     = 'KW_SLACK_MENTION';
@@ -202,11 +203,18 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
-         * Categories whose detection is delegated to Wordfence (relayed via
-         * its security-event action or scan emails) rather than detected
-         * natively. Native handlers for these short-circuit so there is no
-         * double-alerting. Filterable so a site without Wordfence — or one
-         * that prefers native detection — can reclaim any of them.
+         * Categories detected SOLELY by Wordfence (relayed via its scan alert
+         * emails) rather than natively. The native handler for each short-
+         * circuits when Wordfence is active, so there is no double-alerting.
+         * Filterable so a site without Wordfence — or one that prefers native
+         * detection — can reclaim any of them.
+         *
+         * file_changed is deliberately NOT in this list: it is dual-sourced.
+         * KW's native root scan fires immediately when you run a scan, and
+         * Wordfence's later full-tree scan relays on its own schedule. The two
+         * cover different scopes (WP root vs. whole tree) and are distinguished
+         * in Slack by a "Source" line. A site that wants the old relay-only
+         * behaviour can add 'file_changed' back via the filter below.
          *
          * @return array<int,string>
          */
@@ -216,10 +224,24 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             // detection stays native — it does not depend on Wordfence-internal
             // event names that change between releases.
             return (array) apply_filters( 'kw_slack_wordfence_sourced', array(
-                'file_changed',
                 'plugin_update_critical',
                 'malware',
             ) );
+        }
+
+        /**
+         * Whether to relay ONLY critical Wordfence alert emails — malware,
+         * file changes, and vulnerable/abandoned plugins. When enabled (the
+         * default), Wordfence emails that don't route to one of those specific
+         * categories (status notices, summaries, routine plugin-update nags,
+         * and other low-signal mail) are dropped instead of being relayed
+         * under the generic wordfence_alert category. Turn it off to relay
+         * every qualifying Wordfence email.
+         *
+         * @return bool
+         */
+        public static function is_wordfence_critical_only() {
+            return (bool) get_option( self::OPTION_WF_CRITICAL_ONLY, true );
         }
 
         private function from_wordfence( $category ) {
@@ -681,8 +703,11 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         public function on_file_anomaly( $unknown, $modified ) {
+            // file_changed is dual-sourced by default (native + Wordfence relay).
+            // This only short-circuits if a site has opted file_changed back into
+            // Wordfence-only sourcing via the kw_slack_wordfence_sourced filter.
             if ( $this->from_wordfence( 'file_changed' ) ) {
-                return; // Relayed from Wordfence scan emails instead.
+                return; // Site chose Wordfence-only sourcing for file changes.
             }
             $unknown  = is_array( $unknown )  ? $unknown  : array();
             $modified = is_array( $modified ) ? $modified : array();
@@ -693,6 +718,9 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 'file_changed',
                 sprintf( 'File integrity anomaly: %d issue(s) in the WordPress root', count( $unknown ) + count( $modified ) ),
                 array(
+                    // Distinguishes this immediate root scan from the later
+                    // Wordfence full-tree scan that may relay the same finding.
+                    'Source'         => 'KW file-integrity scan (WordPress root)',
                     'Unknown files'  => $unknown  ? implode( ', ', $unknown )  : '',
                     'Modified files' => $modified ? implode( ', ', $modified ) : '',
                 )
@@ -1087,7 +1115,12 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             $routes  = (array) apply_filters( 'kw_slack_wordfence_email_routes', array(
                 'malware'                => array( 'malware', 'infected', 'backdoor', 'trojan', 'malicious' ),
                 'file_changed'           => array( 'file change', 'unknown file', 'modified', 'core file', 'contents have changed' ),
-                'plugin_update_critical' => array( 'out of date', 'vulnerab', 'no longer available', 'abandoned', 'update is available', 'needs an update' ),
+                // Strict: only genuinely security-relevant plugin states — a
+                // known vulnerability, or a plugin pulled from the repository /
+                // abandoned. Routine "update available / out of date" notices
+                // are deliberately NOT here, so they fall through to the
+                // critical-only filter below rather than paging as critical.
+                'plugin_update_critical' => array( 'vulnerab', 'no longer available', 'abandoned', 'removed from' ),
             ) );
 
             $category = 'wordfence_alert';
@@ -1102,11 +1135,24 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 }
             }
             if ( ! $matched ) {
-                $realtime = (array) apply_filters( 'kw_slack_wordfence_email_skip', array( 'signed in', 'logged in', ' login', 'locked out', 'lockout', 'blocked' ) );
+                // Events KW already detects natively — skip the WF email so it
+                // doesn't double up on our own alert. 'deactivat' covers the
+                // Wordfence self-deactivation email, which we catch immediately
+                // via the deactivated_plugin hook (wordfence_deactivated) and
+                // which adds no extra coverage over the native signal.
+                $realtime = (array) apply_filters( 'kw_slack_wordfence_email_skip', array( 'signed in', 'logged in', ' login', 'locked out', 'lockout', 'blocked', 'deactivat' ) );
                 foreach ( $realtime as $kw ) {
                     if ( '' !== $kw && false !== strpos( $hay, strtolower( $kw ) ) ) {
-                        return $atts; // login/lockout detected natively — don't relay the WF email too.
+                        return $atts; // detected natively — don't relay the WF email too.
                     }
+                }
+
+                // Critical-only mode: a Wordfence email that didn't route to a
+                // specific critical category (malware, file change, vulnerable
+                // plugin) is a status/low-signal notice. Drop it instead of
+                // relaying under the generic wordfence_alert category.
+                if ( self::is_wordfence_critical_only() ) {
+                    return $atts;
                 }
             }
 
@@ -1118,7 +1164,13 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             $this->notify(
                 $category,
                 '' !== $subject ? $subject : 'Wordfence alert',
-                array( 'Details' => $snippet )
+                array(
+                    // Marks this as relayed from Wordfence so a dual-sourced
+                    // category (file_changed) reads as "Wordfence's full-tree
+                    // scan" next to KW's immediate native root scan.
+                    'Source'  => 'Wordfence scan',
+                    'Details' => $snippet,
+                )
             );
 
             return $atts;

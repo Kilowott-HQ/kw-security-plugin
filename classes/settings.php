@@ -228,6 +228,14 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => KW_Security_Alerts::get_default_categories(),
             ) );
 
+            // Relay only critical Wordfence alert emails (malware, file changes,
+            // vulnerable plugins) vs. every qualifying Wordfence email.
+            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_WF_CRITICAL_ONLY, array(
+                'type'              => 'boolean',
+                'sanitize_callback' => array( $this, 'sanitize_checkbox' ),
+                'default'           => true,
+            ) );
+
             // File Integrity alert recipients (comma-separated emails).
             // Empty = no email sent (Slack/webhook listeners still receive
             // the kw_file_integrity_anomaly action).
@@ -235,6 +243,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'type'              => 'string',
                 'sanitize_callback' => array( $this, 'sanitize_file_integrity_recipients' ),
                 'default'           => '',
+            ) );
+
+            // File Integrity autonomous scan cadence (WP-Cron schedule name).
+            // The KW_File_Integrity constructor reschedules cron to match on the
+            // next request after this option changes.
+            register_setting( self::SETTINGS_GROUP, KW_File_Integrity::OPTION_SCAN_INTERVAL, array(
+                'type'              => 'string',
+                'sanitize_callback' => array( $this, 'sanitize_file_integrity_interval' ),
+                'default'           => KW_File_Integrity::CRON_SCHEDULE_15MIN,
             ) );
 
             // ---- Section 1: Feature toggles ----------------------------
@@ -304,6 +321,14 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'kw_security_file_integrity_section'
             );
 
+            add_settings_field(
+                KW_File_Integrity::OPTION_SCAN_INTERVAL,
+                '<label for="kw_file_integrity_interval">' . esc_html__( 'Scan frequency', 'kw-security' ) . '</label>',
+                array( $this, 'render_file_integrity_interval' ),
+                self::PAGE_SLUG,
+                'kw_security_file_integrity_section'
+            );
+
             // ---- Section 3: Maintenance API ----------------------------
             add_settings_section(
                 'kw_security_maintenance_section',
@@ -348,6 +373,14 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 KW_Security_Alerts::OPTION_CATEGORIES,
                 esc_html__( 'Events to send', 'kw-security' ),
                 array( $this, 'render_slack_categories' ),
+                self::PAGE_SLUG,
+                'kw_security_slack_section'
+            );
+
+            add_settings_field(
+                KW_Security_Alerts::OPTION_WF_CRITICAL_ONLY,
+                '<label for="kw_slack_wordfence_critical_only">' . esc_html__( 'Wordfence relay', 'kw-security' ) . '</label>',
+                array( $this, 'render_wordfence_critical_only' ),
                 self::PAGE_SLUG,
                 'kw_security_slack_section'
             );
@@ -412,6 +445,17 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         }
 
         /**
+         * Sanitize a checkbox to a strict boolean. An unchecked box is absent
+         * from the POST, so a missing value becomes false.
+         *
+         * @param mixed $value
+         * @return bool
+         */
+        public function sanitize_checkbox( $value ) {
+            return ! empty( $value );
+        }
+
+        /**
          * Sanitize the File Integrity recipients field. Accepts a free-form
          * comma/semicolon/whitespace-separated string. Invalid entries are
          * silently dropped; the cleaned value is re-joined with ", " for
@@ -432,6 +476,20 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             }
             $clean = array_values( array_unique( $clean ) );
             return implode( ', ', $clean );
+        }
+
+        /**
+         * Sanitize the scan-frequency selection against the whitelist of
+         * WP-Cron schedule names the scanner supports. Anything unexpected
+         * falls back to the 15-minute default.
+         *
+         * @param mixed $value
+         * @return string
+         */
+        public function sanitize_file_integrity_interval( $value ) {
+            $value   = is_string( $value ) ? $value : '';
+            $allowed = KW_File_Integrity::get_allowed_intervals();
+            return in_array( $value, $allowed, true ) ? $value : KW_File_Integrity::CRON_SCHEDULE_15MIN;
         }
 
         /**
@@ -584,7 +642,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         public function file_integrity_section_desc() {
             if ( ! self::is_enabled( 'file_integrity' ) ) {
                 echo '<p><em>'
-                    . esc_html__( 'File Integrity Monitoring is currently disabled. Enable the toggle above and save to activate daily scans.', 'kw-security' )
+                    . esc_html__( 'File Integrity Monitoring is currently disabled. Enable the toggle above and save to activate scheduled scans.', 'kw-security' )
                     . '</em></p>';
                 return;
             }
@@ -745,6 +803,25 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             echo '</details>';
         }
 
+        public function render_wordfence_critical_only() {
+            $critical_only = KW_Security_Alerts::is_wordfence_critical_only();
+            ?>
+            <label for="kw_slack_wordfence_critical_only">
+                <input
+                    type="checkbox"
+                    id="kw_slack_wordfence_critical_only"
+                    name="<?php echo esc_attr( KW_Security_Alerts::OPTION_WF_CRITICAL_ONLY ); ?>"
+                    value="1"
+                    <?php checked( $critical_only, true ); ?>
+                />
+                <?php esc_html_e( 'Relay only critical Wordfence alerts', 'kw-security' ); ?>
+            </label>
+            <p class="description">
+                <?php esc_html_e( 'KW mirrors Wordfence\'s own alert emails into Slack. When checked, only genuinely critical Wordfence emails are relayed — malware/infection findings, core file changes, and known-vulnerable or abandoned plugins. Low-signal mail (routine "update available" notices, status summaries, and other non-critical alerts) is dropped. Uncheck to relay every Wordfence alert email. Note: Wordfence login/lockout emails are never relayed (KW detects those natively).', 'kw-security' ); ?>
+            </p>
+            <?php
+        }
+
         public function render_file_integrity_recipients() {
             $value = (string) get_option( KW_File_Integrity::OPTION_RECIPIENTS, '' );
             ?>
@@ -760,6 +837,28 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             />
             <p class="description">
                 <?php esc_html_e( 'Comma-separated email addresses. Invalid entries are silently dropped on save. Leave blank to disable email alerts (Slack will still receive notifications if configured).', 'kw-security' ); ?>
+            </p>
+            <?php
+        }
+
+        public function render_file_integrity_interval() {
+            $value   = (string) get_option( KW_File_Integrity::OPTION_SCAN_INTERVAL, KW_File_Integrity::CRON_SCHEDULE_15MIN );
+            $choices = array(
+                KW_File_Integrity::CRON_SCHEDULE_15MIN => __( 'Every 15 minutes (fastest detection)', 'kw-security' ),
+                'hourly'                               => __( 'Hourly', 'kw-security' ),
+                'daily'                                => __( 'Once daily (lowest overhead)', 'kw-security' ),
+            );
+            if ( ! isset( $choices[ $value ] ) ) {
+                $value = KW_File_Integrity::CRON_SCHEDULE_15MIN;
+            }
+            ?>
+            <select id="kw_file_integrity_interval" name="<?php echo esc_attr( KW_File_Integrity::OPTION_SCAN_INTERVAL ); ?>">
+                <?php foreach ( $choices as $val => $label ) : ?>
+                    <option value="<?php echo esc_attr( $val ); ?>" <?php selected( $value, $val ); ?>><?php echo esc_html( $label ); ?></option>
+                <?php endforeach; ?>
+            </select>
+            <p class="description">
+                <?php esc_html_e( 'How often the autonomous scan runs. A repeat anomaly is alerted once, then re-alerted only if it changes or once per day as a reminder — so a tight interval will not spam the channel. Note: WP-Cron fires on site traffic; for guaranteed timing on low-traffic sites, trigger wp-cron.php from a real system cron.', 'kw-security' ); ?>
             </p>
             <?php
         }
