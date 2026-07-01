@@ -228,6 +228,14 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => KW_Security_Alerts::get_default_categories(),
             ) );
 
+            // Relay only critical Wordfence alert emails (malware, file changes,
+            // vulnerable plugins) vs. every qualifying Wordfence email.
+            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_WF_CRITICAL_ONLY, array(
+                'type'              => 'boolean',
+                'sanitize_callback' => array( $this, 'sanitize_checkbox' ),
+                'default'           => true,
+            ) );
+
             // File Integrity alert recipients (comma-separated emails).
             // Empty = no email sent (Slack/webhook listeners still receive
             // the kw_file_integrity_anomaly action).
@@ -351,6 +359,14 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 self::PAGE_SLUG,
                 'kw_security_slack_section'
             );
+
+            add_settings_field(
+                KW_Security_Alerts::OPTION_WF_CRITICAL_ONLY,
+                '<label for="kw_slack_wordfence_critical_only">' . esc_html__( 'Wordfence relay', 'kw-security' ) . '</label>',
+                array( $this, 'render_wordfence_critical_only' ),
+                self::PAGE_SLUG,
+                'kw_security_slack_section'
+            );
         }
 
         /**
@@ -409,6 +425,17 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 $clean[ $key ] = ! empty( $input[ $key ] );
             }
             return $clean;
+        }
+
+        /**
+         * Sanitize a checkbox to a strict boolean. An unchecked box is absent
+         * from the POST, so a missing value becomes false.
+         *
+         * @param mixed $value
+         * @return bool
+         */
+        public function sanitize_checkbox( $value ) {
+            return ! empty( $value );
         }
 
         /**
@@ -743,6 +770,25 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             }
 
             echo '</details>';
+        }
+
+        public function render_wordfence_critical_only() {
+            $critical_only = KW_Security_Alerts::is_wordfence_critical_only();
+            ?>
+            <label for="kw_slack_wordfence_critical_only">
+                <input
+                    type="checkbox"
+                    id="kw_slack_wordfence_critical_only"
+                    name="<?php echo esc_attr( KW_Security_Alerts::OPTION_WF_CRITICAL_ONLY ); ?>"
+                    value="1"
+                    <?php checked( $critical_only, true ); ?>
+                />
+                <?php esc_html_e( 'Relay only critical Wordfence alerts', 'kw-security' ); ?>
+            </label>
+            <p class="description">
+                <?php esc_html_e( 'KW mirrors Wordfence\'s own alert emails into Slack. When checked, only genuinely critical Wordfence emails are relayed — malware/infection findings, core file changes, and known-vulnerable or abandoned plugins. Low-signal mail (routine "update available" notices, status summaries, and other non-critical alerts) is dropped. Uncheck to relay every Wordfence alert email. Note: Wordfence login/lockout emails are never relayed (KW detects those natively).', 'kw-security' ); ?>
+            </p>
+            <?php
         }
 
         public function render_file_integrity_recipients() {

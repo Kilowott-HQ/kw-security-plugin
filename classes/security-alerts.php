@@ -38,6 +38,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         const OPTION_CATEGORIES = 'kw_slack_alert_categories';
         const OPTION_MENTION    = 'kw_slack_mention';
         const OPTION_FM_BASELINE = 'kw_slack_fm_baseline_done'; // one-time file-manager sweep flag.
+        const OPTION_WF_CRITICAL_ONLY = 'kw_slack_wordfence_critical_only'; // relay only critical WF emails.
         const CONST_WEBHOOK     = 'KW_SLACK_WEBHOOK_URL';
         const ENV_WEBHOOK       = 'KW_SLACK_WEBHOOK_URL';
         const CONST_MENTION     = 'KW_SLACK_MENTION';
@@ -226,6 +227,21 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 'plugin_update_critical',
                 'malware',
             ) );
+        }
+
+        /**
+         * Whether to relay ONLY critical Wordfence alert emails — malware,
+         * file changes, and vulnerable/abandoned plugins. When enabled (the
+         * default), Wordfence emails that don't route to one of those specific
+         * categories (status notices, summaries, routine plugin-update nags,
+         * and other low-signal mail) are dropped instead of being relayed
+         * under the generic wordfence_alert category. Turn it off to relay
+         * every qualifying Wordfence email.
+         *
+         * @return bool
+         */
+        public static function is_wordfence_critical_only() {
+            return (bool) get_option( self::OPTION_WF_CRITICAL_ONLY, true );
         }
 
         private function from_wordfence( $category ) {
@@ -1099,7 +1115,12 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             $routes  = (array) apply_filters( 'kw_slack_wordfence_email_routes', array(
                 'malware'                => array( 'malware', 'infected', 'backdoor', 'trojan', 'malicious' ),
                 'file_changed'           => array( 'file change', 'unknown file', 'modified', 'core file', 'contents have changed' ),
-                'plugin_update_critical' => array( 'out of date', 'vulnerab', 'no longer available', 'abandoned', 'update is available', 'needs an update' ),
+                // Strict: only genuinely security-relevant plugin states — a
+                // known vulnerability, or a plugin pulled from the repository /
+                // abandoned. Routine "update available / out of date" notices
+                // are deliberately NOT here, so they fall through to the
+                // critical-only filter below rather than paging as critical.
+                'plugin_update_critical' => array( 'vulnerab', 'no longer available', 'abandoned', 'removed from' ),
             ) );
 
             $category = 'wordfence_alert';
@@ -1124,6 +1145,14 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                     if ( '' !== $kw && false !== strpos( $hay, strtolower( $kw ) ) ) {
                         return $atts; // detected natively — don't relay the WF email too.
                     }
+                }
+
+                // Critical-only mode: a Wordfence email that didn't route to a
+                // specific critical category (malware, file change, vulnerable
+                // plugin) is a status/low-signal notice. Drop it instead of
+                // relaying under the generic wordfence_alert category.
+                if ( self::is_wordfence_critical_only() ) {
+                    return $atts;
                 }
             }
 
