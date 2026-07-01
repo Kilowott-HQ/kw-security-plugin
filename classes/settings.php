@@ -254,136 +254,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => KW_File_Integrity::CRON_SCHEDULE_15MIN,
             ) );
 
-            // ---- Section 1: Feature toggles ----------------------------
-            add_settings_section(
-                'kw_security_features_section',
-                __( 'Feature Toggles', 'kw-security' ),
-                array( $this, 'features_section_desc' ),
-                self::PAGE_SLUG
-            );
-
-            foreach ( $this->get_feature_metadata() as $key => $meta ) {
-                add_settings_field(
-                    'kw_security_feature_' . $key,
-                    esc_html( $meta['label'] ),
-                    array( $this, 'render_feature_toggle' ),
-                    self::PAGE_SLUG,
-                    'kw_security_features_section',
-                    array(
-                        'key'         => $key,
-                        'label'       => $meta['label'],
-                        'description' => $meta['description'],
-                    )
-                );
-            }
-
-            // ---- Section 2: Hide Login URL configuration ---------------
-            // (File Integrity status is rendered OUTSIDE the main settings
-            // form by render_file_integrity_panel() — its action buttons
-            // post to admin-post.php as separate forms, and HTML does not
-            // allow nested forms.)
-            add_settings_section(
-                'kw_security_hide_login_section',
-                __( 'Hide Login URL Configuration', 'kw-security' ),
-                array( $this, 'hide_login_section_desc' ),
-                self::PAGE_SLUG
-            );
-
-            add_settings_field(
-                'whl_page',
-                '<label for="whl_page">' . esc_html__( 'Login URL', 'kw-security' ) . '</label>',
-                array( $this, 'render_whl_page' ),
-                self::PAGE_SLUG,
-                'kw_security_hide_login_section'
-            );
-
-            add_settings_field(
-                'whl_redirect_admin',
-                '<label for="whl_redirect_admin">' . esc_html__( 'Redirection URL', 'kw-security' ) . '</label>',
-                array( $this, 'render_whl_redirect' ),
-                self::PAGE_SLUG,
-                'kw_security_hide_login_section'
-            );
-
-            // ---- File Integrity Configuration --------------------------
-            add_settings_section(
-                'kw_security_file_integrity_section',
-                __( 'File Integrity Configuration', 'kw-security' ),
-                array( $this, 'file_integrity_section_desc' ),
-                self::PAGE_SLUG
-            );
-
-            add_settings_field(
-                KW_File_Integrity::OPTION_RECIPIENTS,
-                '<label for="kw_file_integrity_recipients">' . esc_html__( 'Alert recipients', 'kw-security' ) . '</label>',
-                array( $this, 'render_file_integrity_recipients' ),
-                self::PAGE_SLUG,
-                'kw_security_file_integrity_section'
-            );
-
-            add_settings_field(
-                KW_File_Integrity::OPTION_SCAN_INTERVAL,
-                '<label for="kw_file_integrity_interval">' . esc_html__( 'Scan frequency', 'kw-security' ) . '</label>',
-                array( $this, 'render_file_integrity_interval' ),
-                self::PAGE_SLUG,
-                'kw_security_file_integrity_section'
-            );
-
-            // ---- Section 3: Maintenance API ----------------------------
-            add_settings_section(
-                'kw_security_maintenance_section',
-                __( 'Maintenance API', 'kw-security' ),
-                array( $this, 'maintenance_section_desc' ),
-                self::PAGE_SLUG
-            );
-
-            add_settings_field(
-                KW_Maintenance_API::OPTION_KEY,
-                '<label for="kw_maintenance_key">' . esc_html__( 'API Key', 'kw-security' ) . '</label>',
-                array( $this, 'render_maintenance_key' ),
-                self::PAGE_SLUG,
-                'kw_security_maintenance_section'
-            );
-
-            // ---- Section 4: Slack Security Alerts ----------------------
-            add_settings_section(
-                'kw_security_slack_section',
-                __( 'Slack Security Alerts', 'kw-security' ),
-                array( $this, 'slack_section_desc' ),
-                self::PAGE_SLUG
-            );
-
-            add_settings_field(
-                KW_Security_Alerts::OPTION_WEBHOOK,
-                '<label for="kw_slack_webhook">' . esc_html__( 'Webhook URL', 'kw-security' ) . '</label>',
-                array( $this, 'render_slack_webhook' ),
-                self::PAGE_SLUG,
-                'kw_security_slack_section'
-            );
-
-            add_settings_field(
-                KW_Security_Alerts::OPTION_MENTION,
-                '<label for="kw_slack_mention">' . esc_html__( 'Notify (mention)', 'kw-security' ) . '</label>',
-                array( $this, 'render_slack_mention' ),
-                self::PAGE_SLUG,
-                'kw_security_slack_section'
-            );
-
-            add_settings_field(
-                KW_Security_Alerts::OPTION_CATEGORIES,
-                esc_html__( 'Events to send', 'kw-security' ),
-                array( $this, 'render_slack_categories' ),
-                self::PAGE_SLUG,
-                'kw_security_slack_section'
-            );
-
-            add_settings_field(
-                KW_Security_Alerts::OPTION_WF_CRITICAL_ONLY,
-                '<label for="kw_slack_wordfence_critical_only">' . esc_html__( 'Wordfence relay', 'kw-security' ) . '</label>',
-                array( $this, 'render_wordfence_critical_only' ),
-                self::PAGE_SLUG,
-                'kw_security_slack_section'
-            );
+            // NOTE: display is a custom grouped-tab layout in render_page()
+            // (each feature toggle with its config beneath it), so we no longer
+            // register Settings-API sections/fields here — only the options
+            // above, which handle saving + sanitization via options.php.
         }
 
         /**
@@ -556,16 +430,27 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 )
                 : esc_html__( 'never (cron will run within 24 hours)', 'kw-security' );
 
-            $admin_email = esc_html( get_option( 'admin_email' ) );
+            // Pull the actual email targets from the configured alert
+            // recipients (already validated + normalized on save). Empty means
+            // no email is sent — only Slack listeners receive the anomaly.
+            $recipients = (string) get_option( KW_File_Integrity::OPTION_RECIPIENTS, '' );
             ?>
             <p>
                 <?php
-                /* translators: %1$s: last scan time, %2$s: admin email */
-                echo wp_kses_post( sprintf(
-                    __( 'Last scan: <strong>%1$s</strong>. Alerts are emailed to <code>%2$s</code>.', 'kw-security' ),
-                    esc_html( $last_label ),
-                    $admin_email
-                ) );
+                if ( '' !== $recipients ) {
+                    /* translators: %1$s: last scan time, %2$s: alert recipient email(s) */
+                    echo wp_kses_post( sprintf(
+                        __( 'Last scan: <strong>%1$s</strong>. Alerts are emailed to <code>%2$s</code>, and notified through slack.', 'kw-security' ),
+                        esc_html( $last_label ),
+                        esc_html( $recipients )
+                    ) );
+                } else {
+                    /* translators: %s: last scan time */
+                    echo wp_kses_post( sprintf(
+                        __( 'Last scan: <strong>%s</strong>. No email recipients are configured — set them under <em>Alert recipients</em> above (Slack alerts still fire if enabled).', 'kw-security' ),
+                        esc_html( $last_label )
+                    ) );
+                }
                 ?>
             </p>
             <p>
@@ -735,7 +620,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 if ( $overridden ) {
                     echo esc_html__( 'Set by the KW_SLACK_MENTION constant or environment variable — this field is read-only.', 'kw-security' );
                 } else {
-                    echo wp_kses_post( __( 'Comma-separated Slack <strong>member IDs</strong> to @-mention on every alert — find one via a Slack profile → <em>More</em> → <em>Copy member ID</em> (e.g. <code>U012ABCDEF</code>). <code>@here</code> and <code>@channel</code> also work. A plain display name like <code>@jason</code> will appear in the message but will <strong>not</strong> notify — Slack only pings by member ID.', 'kw-security' ) );
+                    echo wp_kses_post( __( 'Comma-separated Slack <strong>member IDs</strong> to @-mention on every alert — find one via a Slack profile → <em>More</em> → <em>Copy member ID</em> (e.g. <code>U012ABCDEF</code>). <code>@here</code> and <code>@channel</code> also work. A plain display name like <code>@example</code> will appear in the message but will <strong>not</strong> notify — Slack only pings by member ID.', 'kw-security' ) );
                 }
                 ?>
             </p>
@@ -780,6 +665,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 . esc_html__( 'Only the checked event types are sent to Slack. Every type is a genuine breach indicator, so all are enabled by default.', 'kw-security' )
                 . '</p>';
 
+            // Categories whose event can only fire while a given feature is on.
+            // When that feature is off, the checkbox is locked (the alert can
+            // never fire), with a hint pointing at the required feature.
+            $requires = array(
+                'upload_blocked' => 'file_security',
+                'file_changed'   => 'file_integrity',
+            );
+            $meta = $this->get_feature_metadata();
+
             foreach ( $groups as $heading => $keys ) {
                 printf(
                     '<fieldset style="margin:0 0 14px;"><legend style="font-weight:600;padding:0;margin-bottom:4px;">%s</legend>',
@@ -789,12 +683,35 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     if ( ! isset( $labels[ $key ] ) ) {
                         continue;
                     }
-                    $name = KW_Security_Alerts::OPTION_CATEGORIES . '[' . $key . ']';
+                    $name       = KW_Security_Alerts::OPTION_CATEGORIES . '[' . $key . ']';
+                    $is_checked = ! empty( $enabled[ $key ] );
+                    $dep        = isset( $requires[ $key ] ) ? $requires[ $key ] : '';
+                    $locked     = ( '' !== $dep && ! self::is_enabled( $dep ) );
+
+                    // A disabled checkbox never submits, which would flip a
+                    // stored ON category to OFF on save. Preserve its value via
+                    // a hidden input so re-enabling the feature restores it.
+                    if ( $locked && $is_checked ) {
+                        printf( '<input type="hidden" name="%s" value="1" />', esc_attr( $name ) );
+                    }
+
+                    $hint = '';
+                    if ( $locked ) {
+                        $hint = ' <span class="description">' . esc_html( sprintf(
+                            /* translators: %s: name of the required feature */
+                            __( '— requires the "%s" feature', 'kw-security' ),
+                            isset( $meta[ $dep ]['label'] ) ? $meta[ $dep ]['label'] : $dep
+                        ) ) . '</span>';
+                    }
+
                     printf(
-                        '<label style="display:block;margin:2px 0;"><input type="checkbox" name="%s" value="1"%s /> %s</label>',
+                        '<label style="display:block;margin:2px 0;%1$s"><input type="checkbox" name="%2$s" value="1"%3$s%4$s /> %5$s</label>%6$s',
+                        $locked ? 'opacity:.55;' : '',
                         esc_attr( $name ),
-                        checked( ! empty( $enabled[ $key ] ), true, false ),
-                        esc_html( $labels[ $key ] )
+                        checked( $is_checked, true, false ),
+                        disabled( $locked, true, false ),
+                        esc_html( $labels[ $key ] ),
+                        $hint
                     );
                 }
                 echo '</fieldset>';
@@ -949,15 +866,125 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         // Page renderer
         // ----------------------------------------------------------------
 
+        /**
+         * Feature toggles grouped into settings tabs, in display order.
+         *
+         * @return array<string,array{label:string,features:string[]}>
+         */
+        private function get_feature_groups() {
+            return array(
+                'login' => array(
+                    'label'    => __( 'Login & Access', 'kw-security' ),
+                    'features' => array( 'hide_login_url', 'login_rate_limit', 'user_enumeration', 'disable_author_url', 'password_policy' ),
+                ),
+                'files' => array(
+                    'label'    => __( 'Files & Integrity', 'kw-security' ),
+                    'features' => array( 'file_integrity', 'file_security' ),
+                ),
+                'hardening' => array(
+                    'label'    => __( 'Hardening', 'kw-security' ),
+                    'features' => array( 'comments', 'xmlrpc_pingback', 'security_headers', 'update_management' ),
+                ),
+                'alerts' => array(
+                    'label'    => __( 'Alerts & Integrations', 'kw-security' ),
+                    'features' => array( 'slack_alerts', 'activity_log', 'maintenance_api' ),
+                ),
+            );
+        }
+
+        /**
+         * Configuration fields shown beneath a feature's toggle, keyed by
+         * feature. Each field is a label + a renderer method already used for
+         * that input. Features not listed here have no configuration.
+         *
+         * @return array<string,array<int,array{label:string,cb:string}>>
+         */
+        private function get_feature_config_fields() {
+            return array(
+                'hide_login_url' => array(
+                    array( 'label' => __( 'Login URL', 'kw-security' ),       'cb' => 'render_whl_page' ),
+                    array( 'label' => __( 'Redirection URL', 'kw-security' ),  'cb' => 'render_whl_redirect' ),
+                ),
+                'file_integrity' => array(
+                    array( 'label' => __( 'Alert recipients', 'kw-security' ), 'cb' => 'render_file_integrity_recipients' ),
+                    array( 'label' => __( 'Scan frequency', 'kw-security' ),   'cb' => 'render_file_integrity_interval' ),
+                ),
+                'slack_alerts' => array(
+                    array( 'label' => __( 'Webhook URL', 'kw-security' ),      'cb' => 'render_slack_webhook' ),
+                    array( 'label' => __( 'Notify (mention)', 'kw-security' ), 'cb' => 'render_slack_mention' ),
+                    array( 'label' => __( 'Events to send', 'kw-security' ),   'cb' => 'render_slack_categories' ),
+                    array( 'label' => __( 'Wordfence relay', 'kw-security' ),  'cb' => 'render_wordfence_critical_only' ),
+                ),
+                'maintenance_api' => array(
+                    array( 'label' => __( 'API key', 'kw-security' ),          'cb' => 'render_maintenance_key' ),
+                ),
+            );
+        }
+
+        /**
+         * Render one feature as a card: title + on/off toggle, with the
+         * feature's configuration directly beneath it. Config is greyed (via
+         * CSS, not disabled) while the feature is off, so its values still
+         * persist on save.
+         *
+         * @param string $key Feature key from get_defaults().
+         */
+        private function render_feature_card( $key ) {
+            $meta = $this->get_feature_metadata();
+            if ( ! isset( $meta[ $key ] ) ) {
+                return;
+            }
+            $enabled = self::is_enabled( $key );
+            $configs = $this->get_feature_config_fields();
+            $fields  = isset( $configs[ $key ] ) ? $configs[ $key ] : array();
+
+            // Reuse the existing section-description renderers as per-feature
+            // intros where they add context (active URL, endpoint, setup help).
+            $intros = array(
+                'hide_login_url'  => 'hide_login_section_desc',
+                'file_integrity'  => 'file_integrity_section_desc',
+                'maintenance_api' => 'maintenance_section_desc',
+                'slack_alerts'    => 'slack_section_desc',
+            );
+            ?>
+            <div class="kw-card<?php echo $enabled ? ' is-on' : ''; ?>" data-feature="<?php echo esc_attr( $key ); ?>">
+                <div class="kw-card-head">
+                    <h3 class="kw-card-title"><?php echo esc_html( $meta[ $key ]['label'] ); ?></h3>
+                    <?php
+                    $this->render_feature_toggle( array(
+                        'key'         => $key,
+                        'label'       => $meta[ $key ]['label'],
+                        'description' => $meta[ $key ]['description'],
+                    ) );
+                    ?>
+                </div>
+                <?php if ( $fields ) : ?>
+                    <div class="kw-card-config">
+                        <?php if ( isset( $intros[ $key ] ) ) { call_user_func( array( $this, $intros[ $key ] ) ); } ?>
+                        <table class="form-table" role="presentation"><tbody>
+                        <?php foreach ( $fields as $field ) : ?>
+                            <tr>
+                                <th scope="row"><?php echo esc_html( $field['label'] ); ?></th>
+                                <td><?php call_user_func( array( $this, $field['cb'] ) ); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody></table>
+                    </div>
+                <?php endif; ?>
+            </div>
+            <?php
+        }
+
         public function render_page() {
             if ( ! current_user_can( 'manage_options' ) ) {
                 return;
             }
+            $groups = $this->get_feature_groups();
             ?>
-            <div class="wrap">
+            <div class="wrap kw-settings">
                 <h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
 
-                <?php // WordPress core's options-head.php already calls settings_errors() for pages under Settings menu — calling it here would duplicate the "Settings saved." notice. ?>
+                <?php // core's options-head.php already renders settings_errors() for Settings-menu pages. ?>
 
                 <?php
                 // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only redirect-back display set by admin-post handler; the underlying handler is nonce-protected via check_admin_referer().
@@ -982,24 +1009,70 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                     </div>
                 <?php endif; ?>
 
+                <?php $this->features_section_desc(); ?>
+
+                <h2 class="nav-tab-wrapper kw-tabs">
+                    <?php $first = true; foreach ( $groups as $id => $group ) : ?>
+                        <a href="#kw-<?php echo esc_attr( $id ); ?>"
+                           class="nav-tab<?php echo $first ? ' nav-tab-active' : ''; ?>"
+                           data-tab="<?php echo esc_attr( $id ); ?>"><?php echo esc_html( $group['label'] ); ?></a>
+                    <?php $first = false; endforeach; ?>
+                </h2>
+
                 <form method="post" action="options.php">
-                    <?php
-                    settings_fields( self::SETTINGS_GROUP );
-                    do_settings_sections( self::PAGE_SLUG );
-                    submit_button();
-                    ?>
+                    <?php settings_fields( self::SETTINGS_GROUP ); ?>
+                    <?php $first = true; foreach ( $groups as $id => $group ) : ?>
+                        <div class="kw-tab-panel" data-tab="<?php echo esc_attr( $id ); ?>"<?php echo $first ? '' : ' style="display:none;"'; ?>>
+                            <?php foreach ( $group['features'] as $feature ) { $this->render_feature_card( $feature ); } ?>
+                        </div>
+                    <?php $first = false; endforeach; ?>
+                    <?php submit_button(); ?>
                 </form>
 
-                <?php $this->render_file_integrity_panel(); ?>
+                <?php
+                // The File Integrity scan/status panel posts to admin-post.php
+                // via its own forms, so it must live OUTSIDE the settings form
+                // (HTML forbids nested forms). It is shown only on the Files tab.
+                ?>
+                <div class="kw-tab-panel kw-panel-outside" data-tab="files" style="display:none;">
+                    <?php $this->render_file_integrity_panel(); ?>
+                </div>
             </div>
+
+            <style>
+                .kw-settings .kw-card{background:#fff;border:1px solid #dcdcde;border-radius:6px;padding:12px 16px;margin:0 0 12px;}
+                .kw-settings .kw-card-title{display:inline-block;margin:0 10px 0 0;font-size:14px;}
+                .kw-settings .kw-card-head label{vertical-align:middle;}
+                .kw-settings .kw-card-config{margin-top:10px;border-top:1px solid #f0f0f1;}
+                .kw-settings .kw-card-config .form-table{margin-top:0;}
+                .kw-settings .kw-card-config .form-table th{width:170px;padding:14px 10px 14px 0;}
+                .kw-settings .kw-card:not(.is-on) .kw-card-config{opacity:.5;pointer-events:none;}
+                .kw-settings .kw-panel-outside{margin-top:8px;}
+            </style>
             <script>
             ( function () {
+                var tabs   = document.querySelectorAll( '.kw-tabs .nav-tab' );
+                var panels = document.querySelectorAll( '.kw-tab-panel' );
+                function activate( id ) {
+                    tabs.forEach( function ( t ) { t.classList.toggle( 'nav-tab-active', t.dataset.tab === id ); } );
+                    panels.forEach( function ( p ) { p.style.display = ( p.dataset.tab === id ) ? '' : 'none'; } );
+                    try { localStorage.setItem( 'kwSecTab', id ); } catch ( e ) {}
+                }
+                tabs.forEach( function ( t ) {
+                    t.addEventListener( 'click', function ( e ) { e.preventDefault(); activate( this.dataset.tab ); } );
+                } );
+                var saved = null;
+                try { saved = localStorage.getItem( 'kwSecTab' ); } catch ( e ) {}
+                if ( saved && document.querySelector( '.kw-tabs .nav-tab[data-tab="' + saved + '"]' ) ) { activate( saved ); }
+
                 document.querySelectorAll( '.kw-feature-toggle' ).forEach( function ( checkbox ) {
                     checkbox.addEventListener( 'change', function () {
                         var span = this.parentNode.querySelector( '.kw-toggle-status' );
                         if ( span ) {
                             span.textContent = this.checked ? '<?php echo esc_js( __( 'Enabled', 'kw-security' ) ); ?>' : '<?php echo esc_js( __( 'Disabled', 'kw-security' ) ); ?>';
                         }
+                        var card = this.closest( '.kw-card' );
+                        if ( card ) { card.classList.toggle( 'is-on', this.checked ); }
                     } );
                 } );
             } )();
