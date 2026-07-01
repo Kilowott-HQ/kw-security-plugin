@@ -74,6 +74,27 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
         const OPTION_BASELINE_SCHEMA = 'kw_security_file_baseline_schema';
 
         /**
+         * Autonomous scan cadence, stored as a WP-Cron schedule name so it can
+         * be handed straight to wp_schedule_event(). Whitelisted set: the
+         * custom CRON_SCHEDULE_15MIN (registered via register_cron_schedule)
+         * plus the WP built-ins 'hourly' and 'daily'. Configurable from the
+         * settings page; see get_allowed_intervals() / get_scan_schedule().
+         */
+        const OPTION_SCAN_INTERVAL = 'kw_security_file_scan_interval';
+        const CRON_SCHEDULE_15MIN  = 'kw_15min';
+
+        /**
+         * Per-finding alert state: the fingerprint of the last-alerted anomaly
+         * set plus the timestamp it was alerted. Lets us alert once per
+         * distinct finding set and re-alert only when it changes or a daily
+         * reminder is due — so a tight scan cadence (e.g. every 15 minutes)
+         * doesn't ping the channel on every run for the same unresolved issue.
+         *
+         * @var array{fingerprint:string, last_alert:int}
+         */
+        const OPTION_ALERT_STATE = 'kw_security_file_alert_state';
+
+        /**
          * Files expected to live in the WordPress root. Anything else
          * with a code-like extension is treated as suspicious.
          */
@@ -123,11 +144,14 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
         public function __construct() {
             add_action( self::CRON_HOOK, array( $this, 'run_scan' ) );
 
-            // Reschedule on every page load if missing — handles the case
-            // where the feature was just toggled on and cron isn't set up.
-            if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
-                wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', self::CRON_HOOK );
-            }
+            // Register the custom 15-minute interval so wp_schedule_event can
+            // use it. Must be added before ensure_scan_scheduled() runs.
+            add_filter( 'cron_schedules', array( $this, 'register_cron_schedule' ) );
+
+            // Schedule the scan at the configured cadence, and reschedule when
+            // the admin changes the interval (stored schedule no longer matches)
+            // or when it was never scheduled (feature just toggled on).
+            $this->ensure_scan_scheduled();
 
             // Auto-reset baseline after a WP core update (index.php legitimately changes).
             add_action( '_core_updated_successfully', array( $this, 'reset_baseline_silent' ) );
@@ -140,6 +164,60 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             // Manual scan + reset triggers from the settings page.
             add_action( 'admin_post_kw_security_run_scan',         array( $this, 'handle_manual_scan' ) );
             add_action( 'admin_post_kw_security_reset_baseline',   array( $this, 'handle_reset_baseline' ) );
+        }
+
+        /**
+         * Register the custom 15-minute cron interval used when the admin
+         * selects the fastest scan cadence.
+         *
+         * @param array<string,array{interval:int,display:string}> $schedules
+         * @return array<string,array{interval:int,display:string}>
+         */
+        public function register_cron_schedule( $schedules ) {
+            if ( ! isset( $schedules[ self::CRON_SCHEDULE_15MIN ] ) ) {
+                $schedules[ self::CRON_SCHEDULE_15MIN ] = array(
+                    'interval' => 15 * MINUTE_IN_SECONDS,
+                    'display'  => __( 'Every 15 Minutes (KW Security)', 'kw-security' ),
+                );
+            }
+            return $schedules;
+        }
+
+        /**
+         * WP-Cron schedule names the scan may use. Anything outside this set
+         * (e.g. a stale/hand-edited option) falls back to the 15-minute default.
+         *
+         * @return array<int,string>
+         */
+        public static function get_allowed_intervals() {
+            return array( self::CRON_SCHEDULE_15MIN, 'hourly', 'daily' );
+        }
+
+        /**
+         * The configured scan schedule name, validated against the whitelist.
+         *
+         * @return string
+         */
+        public function get_scan_schedule() {
+            $stored = (string) get_option( self::OPTION_SCAN_INTERVAL, self::CRON_SCHEDULE_15MIN );
+            return in_array( $stored, self::get_allowed_intervals(), true )
+                ? $stored
+                : self::CRON_SCHEDULE_15MIN;
+        }
+
+        /**
+         * Ensure the scan is scheduled at the configured cadence. Idempotent:
+         * a no-op when the existing schedule already matches, otherwise clears
+         * and reschedules — which is how an interval change from the settings
+         * page takes effect on the next request.
+         */
+        public function ensure_scan_scheduled() {
+            $desired = $this->get_scan_schedule();
+            if ( wp_get_schedule( self::CRON_HOOK ) === $desired ) {
+                return;
+            }
+            wp_clear_scheduled_hook( self::CRON_HOOK );
+            wp_schedule_event( time() + MINUTE_IN_SECONDS, $desired, self::CRON_HOOK );
         }
 
         /**
@@ -200,7 +278,7 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
          * if any are found (unless $silent is true).
          *
          * @param bool $silent Suppress alert email (used when seeding baseline).
-         * @return array{unknown:array<string>, modified:array<string>}
+         * @return array{unknown:array<string>, modified:array<string>, changes:array<string,mixed>, alerted:bool}
          */
         public function run_scan( $silent = false ) {
             $unknown        = $this->find_unknown_files();
@@ -264,15 +342,107 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             update_option( self::OPTION_BASELINE_CONTENT, $baseline_content, false );
             update_option( self::OPTION_LAST, time(), false );
 
-            if ( ! $silent && ( ! empty( $unknown ) || ! empty( $modified ) ) ) {
-                $this->send_alert( $unknown, $modified, $changes );
+            // Silent scans (baseline seeding/migration) never alert and never
+            // touch the alert-dedupe state. Real scans dispatch through the
+            // "alert once until it changes or a reminder is due" gate.
+            $alerted = $silent
+                ? false
+                : $this->maybe_dispatch_alert( $unknown, $modified, $changes, $current_hashes );
 
-                // Notify listeners (e.g. Slack alerts) of the same anomalies.
-                // Third arg is optional — existing 2-arg listeners ignore it.
-                do_action( 'kw_file_integrity_anomaly', $unknown, $modified, $changes );
+            return array(
+                'unknown'  => $unknown,
+                'modified' => $modified,
+                'changes'  => $changes,
+                'alerted'  => $alerted,
+            );
+        }
+
+        /**
+         * Send the email + Slack alert for a finding set, but only when it is
+         * new, has changed since the last alert, or a daily reminder is due.
+         * This keeps a tight scan cadence (e.g. every 15 minutes) from
+         * re-alerting on every run for the same unresolved anomaly.
+         *
+         * The current hashes of modified files are folded into the fingerprint
+         * so a *further* change to an already-flagged file counts as new and
+         * re-alerts immediately rather than waiting for the daily reminder.
+         *
+         * @param array<string>        $unknown
+         * @param array<string>        $modified
+         * @param array<string,mixed>  $changes
+         * @param array<string,string> $current_hashes
+         * @return bool Whether an alert was dispatched.
+         */
+        private function maybe_dispatch_alert( $unknown, $modified, $changes, $current_hashes ) {
+            $has_findings = ! empty( $unknown ) || ! empty( $modified );
+
+            if ( ! $has_findings ) {
+                // Resolved — forget prior state so a recurrence alerts at once.
+                if ( false !== get_option( self::OPTION_ALERT_STATE, false ) ) {
+                    delete_option( self::OPTION_ALERT_STATE );
+                }
+                return false;
             }
 
-            return array( 'unknown' => $unknown, 'modified' => $modified, 'changes' => $changes );
+            $fingerprint = $this->finding_fingerprint( $unknown, $modified, $current_hashes );
+            $state       = get_option( self::OPTION_ALERT_STATE, array() );
+            if ( ! is_array( $state ) ) {
+                $state = array();
+            }
+            $last     = isset( $state['fingerprint'] ) ? (string) $state['fingerprint'] : '';
+            $last_ts  = isset( $state['last_alert'] ) ? (int) $state['last_alert'] : 0;
+            $now      = time();
+
+            /**
+             * How long an unchanged finding stays quiet before a reminder
+             * re-fires. Default one day. Return 0 to disable reminders entirely
+             * (alert only when the finding set changes).
+             *
+             * @param int $seconds
+             */
+            $reminder     = (int) apply_filters( 'kw_file_integrity_reminder_interval', DAY_IN_SECONDS );
+            $changed      = ( $fingerprint !== $last );
+            $reminder_due = ( $reminder > 0 && ( $now - $last_ts ) >= $reminder );
+
+            if ( ! $changed && ! $reminder_due ) {
+                return false; // Same finding, reminder not due — stay silent.
+            }
+
+            $this->send_alert( $unknown, $modified, $changes );
+
+            // Notify listeners (e.g. Slack alerts) of the same anomalies.
+            // Third arg is optional — existing 2-arg listeners ignore it.
+            do_action( 'kw_file_integrity_anomaly', $unknown, $modified, $changes );
+
+            update_option( self::OPTION_ALERT_STATE, array(
+                'fingerprint' => $fingerprint,
+                'last_alert'  => $now,
+            ), false );
+
+            return true;
+        }
+
+        /**
+         * Stable fingerprint of a finding set: sorted unknown filenames plus
+         * each modified file keyed to its current hash. Two scans that surface
+         * the same anomalies in the same state produce the same fingerprint.
+         *
+         * @param array<string>        $unknown
+         * @param array<string>        $modified
+         * @param array<string,string> $current_hashes
+         * @return string
+         */
+        private function finding_fingerprint( $unknown, $modified, $current_hashes ) {
+            sort( $unknown );
+            $mod = array();
+            foreach ( $modified as $file ) {
+                $mod[ $file ] = isset( $current_hashes[ $file ] ) ? $current_hashes[ $file ] : '';
+            }
+            ksort( $mod );
+            return sha1( (string) wp_json_encode( array(
+                'unknown'  => array_values( $unknown ),
+                'modified' => $mod,
+            ) ) );
         }
 
         /**
@@ -281,6 +451,9 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
         public function reset_baseline_silent() {
             delete_option( self::OPTION_HASHES );
             delete_option( self::OPTION_BASELINE_CONTENT );
+            // Clear alert-dedupe state: current state is the new "known good",
+            // so any prior finding is considered acknowledged/resolved.
+            delete_option( self::OPTION_ALERT_STATE );
             $this->run_scan( true );
         }
 
@@ -588,14 +761,23 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             $count      = count( $result['unknown'] ) + count( $result['modified'] );
             $recipients = $this->get_recipients();
             if ( $count > 0 ) {
-                $msg = empty( $recipients )
-                    ? sprintf( /* translators: %d: number of anomalies */ esc_html__( 'Scan complete. %d anomaly/anomalies detected (no email sent — no recipients configured).', 'kw-security' ), $count )
-                    : sprintf(
+                if ( empty( $result['alerted'] ) ) {
+                    // Finding already reported and unchanged — no duplicate sent.
+                    $msg = sprintf(
+                        /* translators: %d: number of anomalies */
+                        esc_html__( 'Scan complete. %d anomaly/anomalies still present (already alerted — no duplicate notification sent).', 'kw-security' ),
+                        $count
+                    );
+                } elseif ( empty( $recipients ) ) {
+                    $msg = sprintf( /* translators: %d: number of anomalies */ esc_html__( 'Scan complete. %d anomaly/anomalies detected (no email sent — no recipients configured).', 'kw-security' ), $count );
+                } else {
+                    $msg = sprintf(
                         /* translators: 1: number of anomalies, 2: number of recipients */
                         esc_html__( 'Scan complete. %1$d anomaly/anomalies detected; alert emailed to %2$d recipient(s).', 'kw-security' ),
                         $count,
                         count( $recipients )
                     );
+                }
             } else {
                 $msg = esc_html__( 'Scan complete. No anomalies detected.', 'kw-security' );
             }
@@ -618,6 +800,7 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
 
             delete_option( self::OPTION_HASHES );
             delete_option( self::OPTION_BASELINE_CONTENT );
+            delete_option( self::OPTION_ALERT_STATE );
             $this->run_scan( true );
 
             wp_safe_redirect( add_query_arg(

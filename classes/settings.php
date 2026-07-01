@@ -245,6 +245,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => '',
             ) );
 
+            // File Integrity autonomous scan cadence (WP-Cron schedule name).
+            // The KW_File_Integrity constructor reschedules cron to match on the
+            // next request after this option changes.
+            register_setting( self::SETTINGS_GROUP, KW_File_Integrity::OPTION_SCAN_INTERVAL, array(
+                'type'              => 'string',
+                'sanitize_callback' => array( $this, 'sanitize_file_integrity_interval' ),
+                'default'           => KW_File_Integrity::CRON_SCHEDULE_15MIN,
+            ) );
+
             // ---- Section 1: Feature toggles ----------------------------
             add_settings_section(
                 'kw_security_features_section',
@@ -308,6 +317,14 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 KW_File_Integrity::OPTION_RECIPIENTS,
                 '<label for="kw_file_integrity_recipients">' . esc_html__( 'Alert recipients', 'kw-security' ) . '</label>',
                 array( $this, 'render_file_integrity_recipients' ),
+                self::PAGE_SLUG,
+                'kw_security_file_integrity_section'
+            );
+
+            add_settings_field(
+                KW_File_Integrity::OPTION_SCAN_INTERVAL,
+                '<label for="kw_file_integrity_interval">' . esc_html__( 'Scan frequency', 'kw-security' ) . '</label>',
+                array( $this, 'render_file_integrity_interval' ),
                 self::PAGE_SLUG,
                 'kw_security_file_integrity_section'
             );
@@ -462,6 +479,20 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         }
 
         /**
+         * Sanitize the scan-frequency selection against the whitelist of
+         * WP-Cron schedule names the scanner supports. Anything unexpected
+         * falls back to the 15-minute default.
+         *
+         * @param mixed $value
+         * @return string
+         */
+        public function sanitize_file_integrity_interval( $value ) {
+            $value   = is_string( $value ) ? $value : '';
+            $allowed = KW_File_Integrity::get_allowed_intervals();
+            return in_array( $value, $allowed, true ) ? $value : KW_File_Integrity::CRON_SCHEDULE_15MIN;
+        }
+
+        /**
          * Sanitize feature toggle submission. Anything missing from input
          * is treated as unchecked (false).
          *
@@ -611,7 +642,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         public function file_integrity_section_desc() {
             if ( ! self::is_enabled( 'file_integrity' ) ) {
                 echo '<p><em>'
-                    . esc_html__( 'File Integrity Monitoring is currently disabled. Enable the toggle above and save to activate daily scans.', 'kw-security' )
+                    . esc_html__( 'File Integrity Monitoring is currently disabled. Enable the toggle above and save to activate scheduled scans.', 'kw-security' )
                     . '</em></p>';
                 return;
             }
@@ -806,6 +837,28 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             />
             <p class="description">
                 <?php esc_html_e( 'Comma-separated email addresses. Invalid entries are silently dropped on save. Leave blank to disable email alerts (Slack will still receive notifications if configured).', 'kw-security' ); ?>
+            </p>
+            <?php
+        }
+
+        public function render_file_integrity_interval() {
+            $value   = (string) get_option( KW_File_Integrity::OPTION_SCAN_INTERVAL, KW_File_Integrity::CRON_SCHEDULE_15MIN );
+            $choices = array(
+                KW_File_Integrity::CRON_SCHEDULE_15MIN => __( 'Every 15 minutes (fastest detection)', 'kw-security' ),
+                'hourly'                               => __( 'Hourly', 'kw-security' ),
+                'daily'                                => __( 'Once daily (lowest overhead)', 'kw-security' ),
+            );
+            if ( ! isset( $choices[ $value ] ) ) {
+                $value = KW_File_Integrity::CRON_SCHEDULE_15MIN;
+            }
+            ?>
+            <select id="kw_file_integrity_interval" name="<?php echo esc_attr( KW_File_Integrity::OPTION_SCAN_INTERVAL ); ?>">
+                <?php foreach ( $choices as $val => $label ) : ?>
+                    <option value="<?php echo esc_attr( $val ); ?>" <?php selected( $value, $val ); ?>><?php echo esc_html( $label ); ?></option>
+                <?php endforeach; ?>
+            </select>
+            <p class="description">
+                <?php esc_html_e( 'How often the autonomous scan runs. A repeat anomaly is alerted once, then re-alerted only if it changes or once per day as a reminder — so a tight interval will not spam the channel. Note: WP-Cron fires on site traffic; for guaranteed timing on low-traffic sites, trigger wp-cron.php from a real system cron.', 'kw-security' ); ?>
             </p>
             <?php
         }
