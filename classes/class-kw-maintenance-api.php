@@ -32,6 +32,12 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         const RATE_WINDOW   = 3600;
         const KEY_TS_WINDOW = 300; // seconds — reject deliveries older than 5 min
 
+        // wordfence.blocked_bots — recent blocked bot requests from wfHits.
+        const BLOCKED_BOTS_LIMIT     = 50;  // default row cap (override via ?blocked_limit)
+        const BLOCKED_BOTS_LIMIT_MAX = 200; // hard ceiling for the override
+        const BLOCKED_BOTS_UA_MAX    = 256; // user_agent truncation length
+        const BLOCKED_BOTS_PAGE_MAX  = 512; // page path truncation length
+
         // PHP support status — update annually.
         // supported = current stable, active support.
         // outdated  = security-only support, upgrade recommended.
@@ -165,10 +171,10 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         // ----------------------------------------------------------------
 
         public static function handle( WP_REST_Request $request ) {
-            return new WP_REST_Response( self::build_response(), 200 );
+            return new WP_REST_Response( self::build_response( $request ), 200 );
         }
 
-        private static function build_response() {
+        private static function build_response( WP_REST_Request $request = null ) {
             // Load admin includes not available outside wp-admin context.
             if ( ! function_exists( 'get_core_updates' ) ) {
                 require_once ABSPATH . 'wp-admin/includes/update.php';
@@ -322,6 +328,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
             $wf_threat_count  = 0;
             $wf_severe_count  = 0;  // actual malware / backdoors / compromised files
             $wf_api_error     = null;
+            $wf_blocked_bots  = array();  // recent blocked bot requests (see build_blocked_bots)
 
             if ( $wf_active ) {
                 // Severity: Wordfence uses 0/25/50/75/100 — map to our labels.
@@ -423,6 +430,30 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                     $wf_api_error = $e->getMessage();
                     error_log( '[kw-maintenance-api] wfIssues API error: ' . $e->getMessage() );
                 }
+
+                // ── Recent blocked bot requests (Live Traffic) ───────────
+                // Separate subsystem from the scanner above — read from wfHits
+                // and filtered to blocked + bot, wrapped in its own error
+                // handling so a wfHits failure never affects the scan data.
+                $blocked_limit = self::BLOCKED_BOTS_LIMIT;
+                if ( $request instanceof WP_REST_Request ) {
+                    $requested = (int) $request->get_param( 'blocked_limit' );
+                    if ( $requested > 0 ) {
+                        $blocked_limit = min( $requested, self::BLOCKED_BOTS_LIMIT_MAX );
+                    }
+                }
+
+                $bb = self::build_blocked_bots( $blocked_limit );
+                if ( is_array( $bb ) && ! empty( $bb['error'] ) ) {
+                    // wfHits read failed — expose via api_error (only if the scan
+                    // read didn't already set one). blocked_bots stays [] (never null).
+                    if ( null === $wf_api_error ) {
+                        $wf_api_error = $bb['error'];
+                    }
+                    error_log( '[kw-maintenance-api] wfHits blocked_bots read error: ' . $bb['error'] );
+                } elseif ( is_array( $bb ) ) {
+                    $wf_blocked_bots = $bb['data'];
+                }
             }
 
             $wordfence = array(
@@ -432,6 +463,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 'threat_count'         => $wf_threat_count,
                 'severe_threat_count'  => $wf_severe_count,
                 'api_error'            => $wf_api_error,
+                'blocked_bots'         => $wf_blocked_bots,
             );
 
             return array(
@@ -449,6 +481,305 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         // ----------------------------------------------------------------
         // Helpers
         // ----------------------------------------------------------------
+
+        /**
+         * Build wordfence.blocked_bots — recent requests that Wordfence both
+         * BLOCKED and classified as a BOT (not human), newest first.
+         *
+         * Source: {$base_prefix}wfhits (the table backing Live Traffic).
+         *
+         * Blocked filter mirrors Wordfence's own wfLiveTrafficQuery (wfLog.php):
+         *   (statusCode = 403 OR statusCode = 503)
+         *   AND action NOT IN ('logged:waf','scan:detectproxy')
+         *
+         * Bot classification mirrors Wordfence's Live Traffic human/bot split:
+         *   - jsRun = 1 (ran the JS beacon, or a known-human IP/UA) → human, excluded.
+         *   - isGoogle = 1 → verified crawler → bot.
+         *   - jsRun = 0 with full logging on (wfConfig::liveTrafficEnabled()) → bot.
+         *   - jsRun = 0 in security-only mode → refine via wfBrowscap exactly like
+         *     Wordfence's delayed filtering: bot iff the UA is a recognised crawler,
+         *     human iff a recognised browser, bot if the UA is unrecognised.
+         * Because a blocked request is answered before the JS beacon can run, most
+         * blocked hits have jsRun = 0; browscap is what separates blocked bots from
+         * blocked humans — keeping legitimate visitors' PII out of the list.
+         *
+         * We fetch the newest blocked hits, drop humans, then cap at $limit. The
+         * pool is over-fetched a little so human rows don't shrink the result below
+         * the cap; capped by a hard ceiling to bound per-request work.
+         *
+         * @param int $limit Row cap (already clamped by the caller).
+         * @return array { 'data' => array, 'error' => string|null }  ('data' is [] on failure)
+         */
+        private static function build_blocked_bots( $limit ) {
+            global $wpdb;
+
+            $limit = max( 1, (int) $limit );
+            $tbl   = $wpdb->base_prefix . 'wfhits';
+
+            try {
+                $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $tbl ) );
+                if ( $exists !== $tbl ) {
+                    return array( 'data' => array(), 'error' => 'wfhits table not found' );
+                }
+
+                // Over-fetch so human rows removed below don't drop us under the cap.
+                $pool = min( $limit * 4, 800 );
+
+                $rows = $wpdb->get_results( $wpdb->prepare(
+                    "SELECT HEX(IP) AS ip_hex, ctime, statusCode, jsRun, isGoogle,
+                            URL, UA, action, actionDescription
+                       FROM `{$tbl}`
+                      WHERE ( statusCode = 403 OR statusCode = 503 )
+                        AND action NOT IN ( 'logged:waf', 'scan:detectproxy' )
+                      ORDER BY ctime DESC
+                      LIMIT %d",
+                    $pool
+                ) );
+
+                if ( $wpdb->last_error ) {
+                    return array( 'data' => array(), 'error' => 'wfhits query failed: ' . $wpdb->last_error );
+                }
+
+                // Wordfence classification context (all best-effort / guarded).
+                $lt_enabled = class_exists( 'wfConfig' ) && wfConfig::liveTrafficEnabled();
+                $browscap   = null;
+                if ( class_exists( 'wfBrowscap' ) && method_exists( 'wfBrowscap', 'shared' ) ) {
+                    try {
+                        $browscap = wfBrowscap::shared();
+                    } catch ( \Throwable $e ) {
+                        $browscap = null;
+                    }
+                }
+                $now = time();
+
+                $bots = array();
+                if ( is_array( $rows ) ) {
+                    foreach ( $rows as $row ) {
+                        if ( count( $bots ) >= $limit ) {
+                            break;
+                        }
+
+                        $is_google = ! empty( $row->isGoogle ) && '0' !== (string) $row->isGoogle;
+
+                        // Faithful to Wordfence: with full logging, a jsRun=0 hit is
+                        // only a crawler once >30s old (a browser may not have run the
+                        // beacon yet). Moot for a daily poll but kept for parity.
+                        if ( $lt_enabled && ! $is_google && ( $now - (float) $row->ctime ) <= 30 ) {
+                            continue;
+                        }
+
+                        if ( ! self::hit_is_bot( $row, $is_google, $lt_enabled, $browscap ) ) {
+                            continue; // human — excluded (PII intent)
+                        }
+
+                        $ip = self::ip_from_hex( $row->ip_hex );
+
+                        $bots[] = array(
+                            'type'       => $is_google ? 'google' : 'bot',
+                            'reason'     => self::block_reason( (string) $row->action, (string) $row->actionDescription ),
+                            'location'   => self::ip_location( $ip ),
+                            'page'       => self::sanitize_page( $row->URL ),
+                            'blocked_at' => gmdate( 'c', (int) $row->ctime ),
+                            'ip'         => ( '' !== $ip ? $ip : null ),
+                            'hostname'   => self::cached_hostname( $row->ip_hex ),
+                            'response'   => isset( $row->statusCode ) ? (int) $row->statusCode : null,
+                            'user_agent' => self::truncate_ua( $row->UA ),
+                        );
+                    }
+                }
+
+                return array( 'data' => $bots, 'error' => null );
+            } catch ( \Throwable $e ) {
+                return array( 'data' => array(), 'error' => $e->getMessage() );
+            }
+        }
+
+        /**
+         * Decide whether a wfHits row is a bot (not human), mirroring Wordfence's
+         * own Live Traffic classification. See build_blocked_bots() for the rules.
+         */
+        private static function hit_is_bot( $row, $is_google, $lt_enabled, $browscap ) {
+            if ( $is_google ) {
+                return true;
+            }
+            // jsRun truthy → ran the JS beacon or a known-human IP/UA → human.
+            if ( ! empty( $row->jsRun ) && '0' !== (string) $row->jsRun ) {
+                return false;
+            }
+            // Full-logging mode: jsRun = 0 is authoritative → crawler.
+            if ( $lt_enabled ) {
+                return true;
+            }
+            // Security-only mode: refine via browscap (as Wordfence does).
+            $ua = isset( $row->UA ) ? (string) $row->UA : '';
+            if ( $browscap && '' !== $ua ) {
+                try {
+                    $b = $browscap->getBrowser( $ua );
+                } catch ( \Throwable $e ) {
+                    $b = null;
+                }
+                if ( is_array( $b ) && isset( $b['Parent'] ) && 'DefaultProperties' !== $b['Parent'] ) {
+                    return ! empty( $b['Crawler'] ); // recognised: bot iff crawler
+                }
+            }
+            // Unrecognised UA / no browscap → treat as bot (Wordfence keeps it in
+            // the crawler list rather than reclassifying it as human).
+            return true;
+        }
+
+        /**
+         * Normalise a wfHits action into a fixed reason set:
+         * firewall | country | bruteforce | other.
+         *
+         *   firewall   ← blocked:waf, blocked:waf-always, blocked:wfsn, blocked:wfsnrepeat
+         *   bruteforce ← lockedOut
+         *   country    ← blocked:wordfence / cbl:redirect whose description names a country block
+         *   bruteforce ← blocked:wordfence whose description names a login/brute-force block
+         *   other      ← everything else (incl. generic/manual/rate-limit blocked:wordfence)
+         *
+         * blocked:wordfence is Wordfence's catch-all block action; country vs
+         * brute-force is teased apart from actionDescription (best-effort, locale
+         * dependent), otherwise it falls through to 'other'.
+         */
+        private static function block_reason( $action, $description ) {
+            if ( 0 === strpos( $action, 'blocked:waf' ) ) {
+                return 'firewall';
+            }
+            if ( 'blocked:wfsn' === $action || 'blocked:wfsnrepeat' === $action ) {
+                return 'firewall';
+            }
+            if ( 'lockedOut' === $action ) {
+                return 'bruteforce';
+            }
+
+            $desc = strtolower( (string) $description );
+            if ( 'cbl:redirect' === $action ) {
+                return 'country';
+            }
+            if ( 'blocked:wordfence' === $action ) {
+                if ( false !== strpos( $desc, 'country' ) ) {
+                    return 'country';
+                }
+                if ( false !== strpos( $desc, 'brute' ) || false !== strpos( $desc, 'login' ) ) {
+                    return 'bruteforce';
+                }
+            }
+            return 'other';
+        }
+
+        /**
+         * Country lookup via Wordfence's bundled (local) GeoIP database — no
+         * external calls. City is never available (country-level DB). Any failure
+         * yields all-null sub-keys.
+         */
+        private static function ip_location( $ip ) {
+            $loc = array( 'country_code' => null, 'country_name' => null, 'city' => null );
+            if ( '' === $ip || ! class_exists( 'wfUtils' ) ) {
+                return $loc;
+            }
+            try {
+                if ( method_exists( 'wfUtils', 'IP2Country' ) ) {
+                    $code = wfUtils::IP2Country( $ip );
+                    if ( is_string( $code ) && '' !== $code ) {
+                        $loc['country_code'] = strtoupper( $code );
+                        if ( method_exists( 'wfUtils', 'countryCode2Name' ) ) {
+                            $name = wfUtils::countryCode2Name( $code );
+                            if ( is_string( $name ) && '' !== $name ) {
+                                $loc['country_name'] = $name;
+                            }
+                        }
+                    }
+                }
+            } catch ( \Throwable $e ) {
+                // leave nulls
+            }
+            return $loc;
+        }
+
+        /**
+         * Reverse-DNS hostname from Wordfence's cache ONLY — never triggers a live
+         * lookup. Returns null on cache miss / 'NONE' / any failure.
+         */
+        private static function cached_hostname( $ip_hex ) {
+            global $wpdb;
+            $tbl = $wpdb->base_prefix . 'wfreversecache';
+            try {
+                $host = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT host FROM `{$tbl}` WHERE HEX(IP) = %s",
+                    (string) $ip_hex
+                ) );
+                if ( $wpdb->last_error || ! is_string( $host ) ) {
+                    return null;
+                }
+                $host = trim( $host );
+                if ( '' === $host || 'NONE' === $host ) {
+                    return null;
+                }
+                return $host;
+            } catch ( \Throwable $e ) {
+                return null;
+            }
+        }
+
+        /**
+         * Sanitise the requested page: keep the path only (drop query string and
+         * fragment — avoids logging tokens/PII in query params), truncate to
+         * BLOCKED_BOTS_PAGE_MAX. Returns null if empty.
+         */
+        private static function sanitize_page( $url ) {
+            $path = (string) $url;
+            if ( '' === $path ) {
+                return null;
+            }
+            $cut = strcspn( $path, '?#' ); // first '?' or '#'
+            $path = substr( $path, 0, $cut );
+            if ( '' === $path ) {
+                return null;
+            }
+            if ( strlen( $path ) > self::BLOCKED_BOTS_PAGE_MAX ) {
+                $path = substr( $path, 0, self::BLOCKED_BOTS_PAGE_MAX );
+            }
+            return $path;
+        }
+
+        /**
+         * Truncate the user agent to BLOCKED_BOTS_UA_MAX. Returns null if empty.
+         */
+        private static function truncate_ua( $ua ) {
+            $ua = (string) $ua;
+            if ( '' === $ua ) {
+                return null;
+            }
+            if ( strlen( $ua ) > self::BLOCKED_BOTS_UA_MAX ) {
+                $ua = substr( $ua, 0, self::BLOCKED_BOTS_UA_MAX );
+            }
+            return $ua;
+        }
+
+        /**
+         * Convert a HEX(IP) value (16-byte binary, IPv4-mapped-IPv6 for IPv4) to a
+         * printable address. Prefers Wordfence's normaliser; falls back to inet_ntop.
+         */
+        private static function ip_from_hex( $hex ) {
+            $bin = @hex2bin( (string) $hex ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            if ( false === $bin || '' === $bin ) {
+                return '';
+            }
+            if ( class_exists( 'wfUtils' ) && method_exists( 'wfUtils', 'inet_ntop' ) ) {
+                $ip = @wfUtils::inet_ntop( $bin ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                if ( is_string( $ip ) && '' !== $ip ) {
+                    return $ip;
+                }
+            }
+            $ip = @inet_ntop( $bin ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            if ( ! is_string( $ip ) ) {
+                return '';
+            }
+            if ( 0 === strpos( $ip, '::ffff:' ) && false !== strpos( $ip, '.' ) ) {
+                $ip = substr( $ip, 7 );
+            }
+            return $ip;
+        }
 
         private static function classify_php( $version ) {
             $minor = implode( '.', array_slice( explode( '.', $version ), 0, 2 ) );
