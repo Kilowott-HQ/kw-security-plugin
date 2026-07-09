@@ -32,6 +32,12 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         const RATE_WINDOW   = 3600;
         const KEY_TS_WINDOW = 300; // seconds — reject deliveries older than 5 min
 
+        // Wordfence live-traffic (blocked requests) rolling aggregation window.
+        // Dashboard polls daily; a daily snapshot of the last N days is enough.
+        const LIVE_TRAFFIC_WINDOW_DAYS = 7;
+        const LIVE_TRAFFIC_WINDOW_MAX  = 90; // clamp ceiling for the optional override
+        const LIVE_TRAFFIC_TOP_IPS     = 10; // cap on top_ips array size
+
         // PHP support status — update annually.
         // supported = current stable, active support.
         // outdated  = security-only support, upgrade recommended.
@@ -165,10 +171,10 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         // ----------------------------------------------------------------
 
         public static function handle( WP_REST_Request $request ) {
-            return new WP_REST_Response( self::build_response(), 200 );
+            return new WP_REST_Response( self::build_response( $request ), 200 );
         }
 
-        private static function build_response() {
+        private static function build_response( WP_REST_Request $request = null ) {
             // Load admin includes not available outside wp-admin context.
             if ( ! function_exists( 'get_core_updates' ) ) {
                 require_once ABSPATH . 'wp-admin/includes/update.php';
@@ -322,6 +328,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
             $wf_threat_count  = 0;
             $wf_severe_count  = 0;  // actual malware / backdoors / compromised files
             $wf_api_error     = null;
+            $wf_live_traffic  = null;  // firewall blocked-request aggregate (see build_live_traffic)
 
             if ( $wf_active ) {
                 // Severity: Wordfence uses 0/25/50/75/100 — map to our labels.
@@ -423,6 +430,30 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                     $wf_api_error = $e->getMessage();
                     error_log( '[kw-maintenance-api] wfIssues API error: ' . $e->getMessage() );
                 }
+
+                // ── Firewall live traffic (blocked requests) ─────────────
+                // Separate subsystem from the scanner above — aggregated from
+                // Wordfence's firewall tables, wrapped in its own error handling
+                // so a firewall-table failure never affects the scan data.
+                $window_days = self::LIVE_TRAFFIC_WINDOW_DAYS;
+                if ( $request instanceof WP_REST_Request ) {
+                    $requested = (int) $request->get_param( 'window_days' );
+                    if ( $requested > 0 ) {
+                        $window_days = min( $requested, self::LIVE_TRAFFIC_WINDOW_MAX );
+                    }
+                }
+
+                $lt = self::build_live_traffic( $window_days );
+                if ( is_array( $lt ) && ! empty( $lt['error'] ) ) {
+                    // Firewall read failed — expose via api_error (only if the
+                    // scan read didn't already set one) and leave live_traffic null.
+                    if ( null === $wf_api_error ) {
+                        $wf_api_error = $lt['error'];
+                    }
+                    error_log( '[kw-maintenance-api] wfHits/wfBlockedIPLog read error: ' . $lt['error'] );
+                } elseif ( is_array( $lt ) ) {
+                    $wf_live_traffic = $lt['data'];
+                }
             }
 
             $wordfence = array(
@@ -432,6 +463,7 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
                 'threat_count'         => $wf_threat_count,
                 'severe_threat_count'  => $wf_severe_count,
                 'api_error'            => $wf_api_error,
+                'live_traffic'         => $wf_live_traffic,
             );
 
             return array(
@@ -449,6 +481,176 @@ if ( ! class_exists( 'KW_Maintenance_API' ) ) {
         // ----------------------------------------------------------------
         // Helpers
         // ----------------------------------------------------------------
+
+        /**
+         * Build the wordfence.live_traffic aggregate from Wordfence's firewall tables.
+         *
+         * Source of truth is {$base_prefix}wfblockediplog — the same day-aggregated
+         * table Wordfence's own wfActivityReport uses for its "blocked" summaries.
+         * Its blockType column categorises every block; wfHits.action alone can't
+         * (country + rate-limit blocks both collapse to 'blocked:wordfence' there).
+         *
+         * blockType → reason mapping (Wordfence 8.x set: throttle, manual, brute,
+         * fakegoogle, badpost, country, advanced, blacklist, waf):
+         *   firewall   ← waf, advanced, badpost, fakegoogle, blacklist  (automated WAF/rule blocks)
+         *   country    ← country
+         *   bruteforce ← brute, throttle
+         *   other      ← manual + any unknown/future blockType (catch-all)
+         *
+         * last_blocked is read from {$base_prefix}wfhits.ctime (precise unix double)
+         * because wfBlockedIPLog only carries day granularity.
+         *
+         * @param int $window_days Rolling window, in days, inclusive of "now".
+         * @return array { 'data' => array|null, 'error' => string|null }
+         */
+        private static function build_live_traffic( $window_days ) {
+            global $wpdb;
+
+            $window_days = max( 1, (int) $window_days );
+
+            // Wordfence prefixes its tables with base_prefix (network-wide), lowercased.
+            $prefix     = $wpdb->base_prefix;
+            $tbl_blocks = $prefix . 'wfblockediplog';
+            $tbl_hits   = $prefix . 'wfhits';
+
+            $reason_map = array(
+                'waf'        => 'firewall',
+                'advanced'   => 'firewall',
+                'badpost'    => 'firewall',
+                'fakegoogle' => 'firewall',
+                'blacklist'  => 'firewall',
+                'country'    => 'country',
+                'brute'      => 'bruteforce',
+                'throttle'   => 'bruteforce',
+                'manual'     => 'other',
+            );
+
+            try {
+                // Guard: bail cleanly if the firewall table isn't present
+                // (Wordfence missing / renamed schema) rather than erroring out.
+                $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $tbl_blocks ) );
+                if ( $exists !== $tbl_blocks ) {
+                    return array( 'data' => null, 'error' => 'wfblockediplog table not found' );
+                }
+
+                $by_reason = array(
+                    'firewall'   => 0,
+                    'country'    => 0,
+                    'bruteforce' => 0,
+                    'other'      => 0,
+                );
+                $blocked_total = 0;
+                $ips           = array(); // ip => array( 'count' => int, 'reasons' => array( reason => int ) )
+
+                // Rolling window on unixday (= FLOOR(unix_ts / 86400)), mirroring
+                // wfActivityReport's own interval expression. Inclusive of today.
+                $rows = $wpdb->get_results( $wpdb->prepare(
+                    "SELECT HEX(IP) AS ip_hex, blockType, SUM(blockCount) AS cnt
+                       FROM `{$tbl_blocks}`
+                      WHERE unixday >= FLOOR( UNIX_TIMESTAMP( DATE_SUB( NOW(), INTERVAL %d DAY ) ) / 86400 )
+                      GROUP BY IP, blockType",
+                    $window_days
+                ) );
+
+                if ( $wpdb->last_error ) {
+                    return array( 'data' => null, 'error' => 'wfblockediplog query failed: ' . $wpdb->last_error );
+                }
+
+                if ( is_array( $rows ) ) {
+                    foreach ( $rows as $row ) {
+                        $type   = (string) $row->blockType;
+                        $reason = isset( $reason_map[ $type ] ) ? $reason_map[ $type ] : 'other';
+                        $cnt    = (int) $row->cnt;
+
+                        $by_reason[ $reason ] += $cnt;
+                        $blocked_total        += $cnt;
+
+                        $ip = self::ip_from_hex( $row->ip_hex );
+                        if ( '' === $ip ) {
+                            continue;
+                        }
+                        if ( ! isset( $ips[ $ip ] ) ) {
+                            $ips[ $ip ] = array( 'count' => 0, 'reasons' => array() );
+                        }
+                        $ips[ $ip ]['count']            += $cnt;
+                        $ips[ $ip ]['reasons'][ $reason ] =
+                            ( isset( $ips[ $ip ]['reasons'][ $reason ] ) ? $ips[ $ip ]['reasons'][ $reason ] : 0 ) + $cnt;
+                    }
+                }
+
+                // top_ips — highest block counts first, dominant reason per IP.
+                uasort( $ips, function ( $a, $b ) {
+                    return $b['count'] - $a['count'];
+                } );
+                $top_ips = array();
+                foreach ( array_slice( $ips, 0, self::LIVE_TRAFFIC_TOP_IPS, true ) as $ip => $info ) {
+                    arsort( $info['reasons'] );
+                    $dominant = key( $info['reasons'] );
+                    $top_ips[] = array(
+                        'ip'     => $ip,
+                        'count'  => (int) $info['count'],
+                        'reason' => $dominant ? $dominant : 'other',
+                    );
+                }
+
+                // last_blocked — precise timestamp from wfHits.ctime. Best-effort:
+                // a failure here degrades to null, it never fails the whole block.
+                $last_blocked = null;
+                $hits_exists  = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $tbl_hits ) );
+                if ( $hits_exists === $tbl_hits ) {
+                    $max_ctime = $wpdb->get_var( $wpdb->prepare(
+                        "SELECT MAX(ctime)
+                           FROM `{$tbl_hits}`
+                          WHERE ctime > ( UNIX_TIMESTAMP() - %d )
+                            AND ( action LIKE 'blocked%%' OR action IN ( 'lockedOut', 'cbl:redirect' ) )",
+                        $window_days * DAY_IN_SECONDS
+                    ) );
+                    if ( ! $wpdb->last_error && $max_ctime ) {
+                        $last_blocked = gmdate( 'c', (int) $max_ctime );
+                    }
+                }
+
+                return array(
+                    'data' => array(
+                        'window_days'   => $window_days,
+                        'blocked_total' => $blocked_total,
+                        'by_reason'     => $by_reason,
+                        'top_ips'       => $top_ips,
+                        'last_blocked'  => $last_blocked,
+                    ),
+                    'error' => null,
+                );
+            } catch ( \Throwable $e ) {
+                return array( 'data' => null, 'error' => $e->getMessage() );
+            }
+        }
+
+        /**
+         * Convert a Wordfence HEX(IP) value (16-byte binary, IPv4-mapped-IPv6 for
+         * IPv4 addresses) into a printable address. Prefers Wordfence's own
+         * normaliser when available; falls back to PHP inet_ntop.
+         */
+        private static function ip_from_hex( $hex ) {
+            $bin = @hex2bin( (string) $hex ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            if ( false === $bin || '' === $bin ) {
+                return '';
+            }
+            if ( class_exists( 'wfUtils' ) && method_exists( 'wfUtils', 'inet_ntop' ) ) {
+                $ip = @wfUtils::inet_ntop( $bin ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                if ( is_string( $ip ) && '' !== $ip ) {
+                    return $ip;
+                }
+            }
+            $ip = @inet_ntop( $bin ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            if ( ! is_string( $ip ) ) {
+                return '';
+            }
+            // Normalise IPv4-mapped IPv6 (::ffff:1.2.3.4) down to plain IPv4.
+            if ( 0 === strpos( $ip, '::ffff:' ) && false !== strpos( $ip, '.' ) ) {
+                $ip = substr( $ip, 7 );
+            }
+            return $ip;
+        }
 
         private static function classify_php( $version ) {
             $minor = implode( '.', array_slice( explode( '.', $version ), 0, 2 ) );
