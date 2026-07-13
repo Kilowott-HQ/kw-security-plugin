@@ -120,6 +120,11 @@ if ( ! class_exists( 'KW_File_Integrity' ) ) {
             'readme.html',
             'robots.txt',
             'favicon.ico',
+            // Wordfence Web Application Firewall bootstrap. Dropped into the WP
+            // root (with a matching auto_prepend_file directive) when Wordfence's
+            // firewall is in "Extended Protection" mode. A legitimate third-party
+            // file, not core — allowlisted so it isn't flagged as an unknown root file.
+            'wordfence-waf.php',
         );
 
         /**
