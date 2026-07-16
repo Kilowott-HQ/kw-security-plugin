@@ -38,3 +38,5 @@ node_modules/
 wp-config-local.php
 .htaccess.local
 
+.github
+.gitignore
