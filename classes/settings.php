@@ -36,6 +36,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         const PAGE_SLUG   = 'kw-security';
         const SETTINGS_GROUP = 'kw_security_settings';
 
+        // Security-header enforcement bypass lists (see classes/security-headers.php).
+        const IP_WHITELIST_OPTION  = 'kw_security_ip_whitelist';
+        const URL_WHITELIST_OPTION = 'kw_security_url_whitelist';
+
         public function __construct() {
             add_action( 'admin_menu', array( $this, 'register_page' ) );
             add_action( 'admin_init', array( $this, 'register_settings' ) );
@@ -207,6 +211,20 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => '',
             ) );
 
+            // Security-header enforcement bypass — IP addresses/CIDR ranges.
+            register_setting( self::SETTINGS_GROUP, self::IP_WHITELIST_OPTION, array(
+                'type'              => 'array',
+                'sanitize_callback' => array( $this, 'sanitize_ip_whitelist' ),
+                'default'           => array(),
+            ) );
+
+            // Security-header enforcement bypass — URL prefixes (wildcard suffix allowed).
+            register_setting( self::SETTINGS_GROUP, self::URL_WHITELIST_OPTION, array(
+                'type'              => 'array',
+                'sanitize_callback' => array( $this, 'sanitize_url_whitelist' ),
+                'default'           => array(),
+            ) );
+
             // Slack Incoming Webhook URL for security alerts.
             register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_WEBHOOK, array(
                 'type'              => 'string',
@@ -327,6 +345,62 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
          */
         public function sanitize_checkbox( $value ) {
             return ! empty( $value );
+        }
+
+        /**
+         * Sanitize the IP whitelist textarea into a clean array of one
+         * IP-or-CIDR entry per line. Entries that are not a valid IPv4/IPv6
+         * address or CIDR range are dropped rather than stored, so a typo
+         * cannot silently sit in the list looking like it's in effect.
+         *
+         * @param mixed $value
+         * @return array<int,string>
+         */
+        public function sanitize_ip_whitelist( $value ) {
+            $lines = is_array( $value ) ? $value : explode( "\n", (string) $value );
+            $clean = array();
+            foreach ( $lines as $line ) {
+                $line = trim( (string) $line );
+                if ( '' === $line ) {
+                    continue;
+                }
+                if ( strpos( $line, '/' ) !== false ) {
+                    list( $addr, $prefix ) = array_pad( explode( '/', $line, 2 ), 2, '' );
+                    if ( ! filter_var( $addr, FILTER_VALIDATE_IP ) || ! ctype_digit( $prefix ) ) {
+                        continue;
+                    }
+                } elseif ( ! filter_var( $line, FILTER_VALIDATE_IP ) ) {
+                    continue;
+                }
+                $clean[] = $line;
+            }
+            return array_values( array_unique( $clean ) );
+        }
+
+        /**
+         * Sanitize the URL whitelist textarea into a clean array of one URL
+         * (or URL prefix ending in "*") per line.
+         *
+         * @param mixed $value
+         * @return array<int,string>
+         */
+        public function sanitize_url_whitelist( $value ) {
+            $lines = is_array( $value ) ? $value : explode( "\n", (string) $value );
+            $clean = array();
+            foreach ( $lines as $line ) {
+                $line = trim( (string) $line );
+                if ( '' === $line ) {
+                    continue;
+                }
+                $has_wildcard = ( '*' === substr( $line, -1 ) );
+                $prefix       = $has_wildcard ? rtrim( $line, '*' ) : $line;
+                $prefix       = esc_url_raw( $prefix );
+                if ( '' === $prefix ) {
+                    continue;
+                }
+                $clean[] = $has_wildcard ? $prefix . '*' : $prefix;
+            }
+            return array_values( array_unique( $clean ) );
         }
 
         /**
@@ -804,6 +878,42 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             <?php
         }
 
+        public function render_ip_whitelist() {
+            $value = get_option( self::IP_WHITELIST_OPTION, array() );
+            $value = is_array( $value ) ? implode( "\n", $value ) : '';
+            ?>
+            <textarea
+                id="kw_security_ip_whitelist"
+                name="<?php echo esc_attr( self::IP_WHITELIST_OPTION ); ?>"
+                class="large-text code"
+                rows="4"
+                placeholder="203.0.113.10&#10;192.168.1.0/24"
+                spellcheck="false"
+            ><?php echo esc_textarea( $value ); ?></textarea>
+            <p class="description">
+                <?php esc_html_e( 'One IP address or CIDR range per line (e.g. 192.168.1.0/24). Requests from these IPs skip security-header enforcement entirely.', 'kw-security' ); ?>
+            </p>
+            <?php
+        }
+
+        public function render_url_whitelist() {
+            $value = get_option( self::URL_WHITELIST_OPTION, array() );
+            $value = is_array( $value ) ? implode( "\n", $value ) : '';
+            ?>
+            <textarea
+                id="kw_security_url_whitelist"
+                name="<?php echo esc_attr( self::URL_WHITELIST_OPTION ); ?>"
+                class="large-text code"
+                rows="4"
+                placeholder="https://example.com/webhook/&#10;https://example.com/api/*"
+                spellcheck="false"
+            ><?php echo esc_textarea( $value ); ?></textarea>
+            <p class="description">
+                <?php esc_html_e( 'One URL per line. End with * to match by prefix (e.g. https://example.com/api/*). Matching requests skip security-header enforcement entirely.', 'kw-security' ); ?>
+            </p>
+            <?php
+        }
+
         public function render_whl_page() {
             $value = $this->current_login_slug();
             if ( get_option( 'permalink_structure' ) ) {
@@ -917,6 +1027,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'maintenance_api' => array(
                     array( 'label' => __( 'API key', 'kw-security' ),          'cb' => 'render_maintenance_key' ),
+                ),
+                'security_headers' => array(
+                    array( 'label' => __( 'IP Whitelist', 'kw-security' ),  'cb' => 'render_ip_whitelist' ),
+                    array( 'label' => __( 'URL Whitelist', 'kw-security' ), 'cb' => 'render_url_whitelist' ),
                 ),
             );
         }
