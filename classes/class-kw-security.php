@@ -58,6 +58,11 @@ if (!class_exists('KW_Security')) {
 
             // Automatic telemetry check-in for existing sites
             add_action('admin_init', array($this, 'check_telemetry_registration'));
+
+            // Keep the bundled mu-plugin activator in sync after this plugin
+            // updates itself, so a newer copy replaces whatever's already in
+            // wp-content/mu-plugins/ without a separate manual step.
+            add_action('upgrader_process_complete', array($this, 'maybe_refresh_mu_loader'), 10, 2);
         }
 
         /**
@@ -66,6 +71,30 @@ if (!class_exists('KW_Security')) {
         public function check_telemetry_registration() {
             if (class_exists('KW_Security_Telemetry')) {
                 KW_Security_Telemetry::maybe_auto_register();
+            }
+        }
+
+        /**
+         * Re-installs the bundled mu-plugin activator after THIS plugin
+         * updates, so sites stay current without a manual re-upload.
+         * Ignores updates to any other plugin/theme.
+         */
+        public function maybe_refresh_mu_loader($upgrader, $hook_extra) {
+            if (!isset($hook_extra['type'], $hook_extra['action']) || 'plugin' !== $hook_extra['type'] || 'update' !== $hook_extra['action']) {
+                return;
+            }
+
+            $plugins = isset($hook_extra['plugins']) ? (array) $hook_extra['plugins'] : array();
+            if (!empty($hook_extra['plugin'])) {
+                $plugins[] = $hook_extra['plugin'];
+            }
+
+            if (!in_array(plugin_basename(KW_SECURITY_PLUGIN_FILE), $plugins, true)) {
+                return;
+            }
+
+            if (class_exists('KW_Security_Mu_Loader')) {
+                KW_Security_Mu_Loader::install();
             }
         }
 
@@ -79,6 +108,14 @@ if (!class_exists('KW_Security')) {
          * runs feature-specific setup that respects those toggles.
          */
         public static function plugin_activation() {
+            // Reactivating always means "resume reporting" — reset this
+            // BEFORE the activation ping below, since send_ping() itself
+            // refuses to send while it's off (it would otherwise silently
+            // skip the very ping meant to bring this site back into view).
+            if (class_exists('KW_Security_Settings')) {
+                update_option(KW_Security_Settings::DASHBOARD_VISIBILITY_OPTION, true);
+            }
+
             // Seed defaults on first activation — does nothing if option exists.
               // Send activation ping to central dashboard, then keep it
               // heartbeating on a schedule for the life of the plugin.
@@ -100,6 +137,13 @@ if (!class_exists('KW_Security')) {
             // Create activity log table.
             if (class_exists('KW_Activity_Log')) {
                 KW_Activity_Log::activation();
+            }
+
+            // Copy the bundled mu-plugin activator into wp-content/mu-plugins/
+            // so remote activation (of this plugin, or of Wordfence) works
+            // without a separate manual upload step.
+            if (class_exists('KW_Security_Mu_Loader')) {
+                KW_Security_Mu_Loader::install();
             }
 
             // Phase 6-WP: register with the Kilowott scanner so it can deliver

@@ -145,6 +145,13 @@ if (!defined('ABSPATH')) {
          * installation doesn't have an API key yet.
          */
         public static function send_ping($event = 'heartbeat') {
+            // Site owner opted out locally, or the dashboard's own "Remove"
+            // action turned this off remotely — either way, stop reporting
+            // rather than sending heartbeats nobody's watching.
+            if (class_exists('KW_Security_Settings') && !KW_Security_Settings::is_dashboard_visible()) {
+                return;
+            }
+
             if (!self::register()) {
                 // No key yet and registration failed — nothing to authenticate
                 // the heartbeat with. Next scheduled ping will retry.
@@ -180,6 +187,34 @@ if (!defined('ABSPATH')) {
             update_option(self::OPTION_REGISTERED, time(), true);
 
             return $response;
+        }
+
+        /**
+         * Notifies the dashboard immediately that this site's reporting
+         * opt-in changed, instead of waiting for the next hourly heartbeat
+         * (or, if visibility was just turned off, never — since send_ping()
+         * itself now refuses to run while it's off). No-ops silently if this
+         * site was never registered — nothing to notify.
+         */
+        public static function send_visibility_ping($visible) {
+            $api_key = get_option(self::OPTION_API_KEY);
+            if (!$api_key) {
+                return;
+            }
+
+            wp_remote_post(self::API_BASE_URL . '/v1/heartbeat', array(
+                'timeout'   => 5,
+                'blocking'  => false,
+                'sslverify' => true,
+                'headers'   => array(
+                    'Content-Type'  => 'application/json',
+                    'Authorization' => 'Bearer ' . $api_key,
+                ),
+                'body' => wp_json_encode(array(
+                    'installation_id' => self::get_site_id(),
+                    'event'           => $visible ? 'dashboard-shown' : 'dashboard-hidden',
+                )),
+            ));
         }
     }
 

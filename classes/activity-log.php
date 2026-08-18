@@ -228,12 +228,23 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
 
         public function on_delete_user( $user_id ) {
             $user = get_userdata( $user_id );
-            self::insert( array(
+            $args = array(
                 'action'      => 'Deleted',
                 'object_type' => 'User',
                 'object_name' => $user ? $user->user_login : (string) $user_id,
                 'object_id'   => $user_id,
-            ) );
+            );
+
+            // Deleting a user requires the delete_users capability, which no
+            // front-end/anonymous flow grants — so an unauthenticated
+            // session here reliably means this came from the Security
+            // Dashboard's signed remote-delete endpoint, not a real guest.
+            if ( ! get_current_user_id() ) {
+                $args['user_id']   = 0;
+                $args['user_caps'] = 'kw-dashboard';
+            }
+
+            self::insert( $args );
         }
 
         public function on_profile_update( $user_id, $old_data ) {
@@ -435,11 +446,21 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
         // ----------------------------------------------------------------
 
         public function on_kw_settings_saved( $old_value, $new_value ) {
-            self::insert( array(
+            $args = array(
                 'action'      => 'Updated',
                 'object_type' => 'Settings',
                 'object_name' => 'KW Security',
-            ) );
+            );
+
+            // No logged-in session means this change came from the Security
+            // Dashboard's signed remote toggle endpoint, not an admin in
+            // wp-admin — attribute it accordingly instead of "Guest".
+            if ( ! get_current_user_id() ) {
+                $args['user_id']   = 0;
+                $args['user_caps'] = 'kw-dashboard';
+            }
+
+            self::insert( $args );
         }
 
         // ----------------------------------------------------------------
@@ -562,7 +583,132 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
         public static function deactivation() {
             wp_clear_scheduled_hook( 'kw_activity_log_cleanup' );
         }
+
+        // ----------------------------------------------------------------
+        // Dashboard REST API — signed, read-only access to recent entries
+        // ----------------------------------------------------------------
+        //
+        // Registered unconditionally (not gated on the activity_log feature
+        // toggle) so historical entries logged while it was on remain
+        // viewable from the dashboard even after it's turned off.
+
+        const DASHBOARD_API_NAMESPACE = 'kw-security/v1';
+        const DASHBOARD_API_ROUTE     = '/activity-log';
+        const DASHBOARD_TS_WINDOW     = 300; // seconds — reject stale/replayed requests
+
+        // Same keypair as the plugin's other dashboard-triggered endpoints
+        // (update-trigger.php, toggle-feature.php). Safe to publish — verifies
+        // signatures, cannot forge them.
+        const DASHBOARD_UPDATE_PUBLIC_KEY = '-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjtG3XkYTGtr3YoN5/BgJ
+OHXBKcHKaY90xyw/6zxRFTHxVwGGCGqm1MGhcx/9EHHPNKJzBTzFSrzUY46Pc9lE
+KWD4CdJnmgDKNzNw5xJR2cjlsVDK+fABDh2GC23XztAc0o/2m0tr57Gm2Ivcnael
+vu81LbCfysLRAm6O75s8UawN/UEqpp0eaeMedBzWAB1RBEaDoe4aBPJc2ZQo+uLr
+UirIbOYn69OyNWoxqG7AwwoKwXvun6WSONnnRC3btH88D1hKq3oAMALp0zHw8Fkc
+Grty7dMqCwbdNKtwr9GL2i7Ve8YrhNCt7uT4NEhbi2JXnXDIqxBQwVumXsJ1taPx
+YQIDAQAB
+-----END PUBLIC KEY-----';
+
+        public static function init_dashboard_api() {
+            register_rest_route( self::DASHBOARD_API_NAMESPACE, self::DASHBOARD_API_ROUTE, array(
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => array( __CLASS__, 'handle_dashboard_request' ),
+                'permission_callback' => array( __CLASS__, 'authenticate_dashboard_request' ),
+            ) );
+        }
+
+        /**
+         * Verifies the request came from the dashboard for THIS site,
+         * within a short freshness window.
+         */
+        public static function authenticate_dashboard_request( WP_REST_Request $request ) {
+            if ( strpos( home_url(), 'https://' ) === 0 && ! is_ssl() ) {
+                return new WP_Error( 'https_required', 'This endpoint requires HTTPS.', array( 'status' => 403 ) );
+            }
+
+            $installation_id = sanitize_text_field( (string) $request->get_param( 'installation_id' ) );
+            $timestamp        = (int) $request->get_param( 'timestamp' );
+            $signature        = (string) $request->get_param( 'signature' );
+
+            if ( ! $installation_id || ! $timestamp || ! $signature ) {
+                return new WP_Error( 'bad_request', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            if ( ! class_exists( 'KW_Security_Telemetry' ) || $installation_id !== KW_Security_Telemetry::get_site_id() ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            if ( abs( time() - $timestamp ) > self::DASHBOARD_TS_WINDOW ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $message   = $installation_id . '|activity-log|' . $timestamp;
+            $sig_bytes = base64_decode( $signature, true );
+            if ( false === $sig_bytes ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $pub = openssl_get_publickey( self::DASHBOARD_UPDATE_PUBLIC_KEY );
+            if ( false === $pub || 1 !== openssl_verify( $message, $sig_bytes, $pub, OPENSSL_ALGO_SHA256 ) ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            return true;
+        }
+
+        public static function handle_dashboard_request( WP_REST_Request $request ) {
+            global $wpdb;
+            $table = $wpdb->prefix . self::TABLE_SUFFIX;
+
+            $limit = (int) $request->get_param( 'limit' );
+            if ( $limit <= 0 || $limit > 100 ) {
+                $limit = 50;
+            }
+
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name is a fixed internal string.
+            $rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY created_at DESC LIMIT %d", $limit ) );
+
+            $entries = array();
+            foreach ( (array) $rows as $row ) {
+                $entries[] = array(
+                    'received_at'    => gmdate( 'c', (int) $row->created_at ),
+                    'user'           => self::resolve_dashboard_user_label( $row ),
+                    'ip'             => $row->ip,
+                    'object_type'    => $row->object_type,
+                    'object_subtype' => $row->object_subtype,
+                    'object_name'    => $row->object_name,
+                    'action'         => $row->action,
+                );
+            }
+
+            return new WP_REST_Response( array(
+                'ok'      => true,
+                'enabled' => class_exists( 'KW_Security_Settings' ) && KW_Security_Settings::is_enabled( 'activity_log' ),
+                'entries' => $entries,
+            ), 200 );
+        }
+
+        /**
+         * Human-readable user label for a raw log row — mirrors
+         * column_user()'s logic so the dashboard and the wp-admin table
+         * agree on how an entry is attributed.
+         */
+        private static function resolve_dashboard_user_label( $row ) {
+            if ( ! (int) $row->user_id ) {
+                if ( 'kw-dashboard' === $row->user_caps ) {
+                    return 'KW Dashboard';
+                }
+                if ( 'system' === $row->user_caps ) {
+                    return 'System';
+                }
+                return 'Guest';
+            }
+            $user = get_userdata( (int) $row->user_id );
+            return $user ? $user->display_name : ( 'Deleted User #' . (int) $row->user_id );
+        }
     }
+
+    add_action( 'rest_api_init', array( 'KW_Activity_Log', 'init_dashboard_api' ) );
 
     // ----------------------------------------------------------------
     // List Table
@@ -696,6 +842,12 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
 
                 public function column_user( $item ) {
                     if ( ! (int) $item->user_id ) {
+                        if ( 'kw-dashboard' === $item->user_caps ) {
+                            return '<em>' . esc_html__( 'KW Dashboard', 'kw-security' ) . '</em>';
+                        }
+                        if ( 'system' === $item->user_caps ) {
+                            return '<em>' . esc_html__( 'System', 'kw-security' ) . '</em>';
+                        }
                         return '<em>' . esc_html__( 'Guest', 'kw-security' ) . '</em>';
                     }
                     $user = get_userdata( (int) $item->user_id );

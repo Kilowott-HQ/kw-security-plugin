@@ -7,6 +7,9 @@
  *
  * Release workflow:
  *   1. Bump Version in kw-security.php (both plugin header and KW_SECURITY_VERSION).
+ *      Also bump the "Tested up to" header when a new WP major/minor ships —
+ *      PUC reads it from the tagged copy of this file and WP uses it for the
+ *      "Compatibility with WordPress x.y.z" line on Dashboard > Updates.
  *   2. Create a GitHub release tagged with that exact version string (e.g. 26.05.05).
  *   3. Attach a zip whose root folder is named "kw-security" — WP uses this
  *      as the plugin directory name when installing the update.

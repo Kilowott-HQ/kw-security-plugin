@@ -40,6 +40,12 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         const IP_WHITELIST_OPTION  = 'kw_security_ip_whitelist';
         const URL_WHITELIST_OPTION = 'kw_security_url_whitelist';
 
+        // Telemetry opt-in — NOT a security feature toggle (not part of
+        // get_defaults()). Read by KW_Security_Telemetry::send_ping() before
+        // every heartbeat, and settable remotely via the Security
+        // Dashboard's "Remove" action (see classes/dashboard-visibility.php).
+        const DASHBOARD_VISIBILITY_OPTION = 'kw_security_show_in_dashboard';
+
         public function __construct() {
             add_action( 'admin_menu', array( $this, 'register_page' ) );
             add_action( 'admin_init', array( $this, 'register_settings' ) );
@@ -94,6 +100,21 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 $resolved = wp_parse_args( $stored, self::get_defaults() );
             }
             return ! empty( $resolved[ $feature ] );
+        }
+
+        /**
+         * Whether this site should currently be reporting to the Security
+         * Dashboard. Defaults to true; the site owner can turn it off here,
+         * or the dashboard's own "Remove" action can turn it off remotely
+         * (see classes/dashboard-visibility.php) — either way,
+         * KW_Security_Telemetry::send_ping() checks this before every
+         * heartbeat, so turning it off actually stops reporting rather than
+         * just hiding an existing listing.
+         *
+         * @return bool
+         */
+        public static function is_dashboard_visible() {
+            return (bool) get_option( self::DASHBOARD_VISIBILITY_OPTION, true );
         }
 
         /**
@@ -272,6 +293,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => KW_File_Integrity::CRON_SCHEDULE_15MIN,
             ) );
 
+            // Telemetry opt-in — whether this site reports to the Security
+            // Dashboard at all. Changing it pings the dashboard immediately
+            // rather than waiting for the next scheduled heartbeat.
+            register_setting( self::SETTINGS_GROUP, self::DASHBOARD_VISIBILITY_OPTION, array(
+                'type'              => 'boolean',
+                'sanitize_callback' => array( $this, 'sanitize_dashboard_visibility' ),
+                'default'           => true,
+            ) );
+
             // NOTE: display is a custom grouped-tab layout in render_page()
             // (each feature toggle with its config beneath it), so we no longer
             // register Settings-API sections/fields here — only the options
@@ -345,6 +375,25 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
          */
         public function sanitize_checkbox( $value ) {
             return ! empty( $value );
+        }
+
+        /**
+         * Sanitize the dashboard-visibility checkbox, and notify the
+         * dashboard immediately if the value actually changed — same
+         * "show up right away, don't wait for the next hourly heartbeat"
+         * behavior as the remote Remove action gets when the dashboard
+         * flips this the other direction.
+         *
+         * @param mixed $value
+         * @return bool
+         */
+        public function sanitize_dashboard_visibility( $value ) {
+            $new_value = ! empty( $value );
+            $old_value = self::is_dashboard_visible();
+            if ( $new_value !== $old_value && class_exists( 'KW_Security_Telemetry' ) ) {
+                KW_Security_Telemetry::send_visibility_ping( $new_value );
+            }
+            return $new_value;
         }
 
         /**
@@ -472,6 +521,34 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         // ----------------------------------------------------------------
         // Section descriptions
         // ----------------------------------------------------------------
+
+        /**
+         * Standalone card (not part of any feature-group tab) controlling
+         * whether this site reports to the Security Dashboard at all.
+         */
+        public function render_dashboard_visibility_section() {
+            $visible = self::is_dashboard_visible();
+            $status  = $visible ? __( 'Enabled', 'kw-security' ) : __( 'Disabled', 'kw-security' );
+            ?>
+            <div class="kw-card<?php echo $visible ? ' is-on' : ''; ?>" style="margin-bottom:20px;">
+                <div class="kw-card-head">
+                    <h3 class="kw-card-title"><?php esc_html_e( 'Show on KW Security Dashboard', 'kw-security' ); ?></h3>
+                    <label>
+                        <input
+                            type="checkbox"
+                            name="<?php echo esc_attr( self::DASHBOARD_VISIBILITY_OPTION ); ?>"
+                            value="1"
+                            <?php checked( $visible ); ?>
+                        />
+                        <span><?php echo esc_html( $status ); ?></span>
+                    </label>
+                </div>
+                <p class="description">
+                    <?php esc_html_e( 'When off, this site stops sending heartbeats and disappears from the Security Dashboard\'s installation list. Reactivating the plugin, or checking this back on and saving, resumes reporting immediately.', 'kw-security' ); ?>
+                </p>
+            </div>
+            <?php
+        }
 
         public function features_section_desc() {
             echo '<p>'
@@ -1135,6 +1212,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
 
                 <form method="post" action="options.php">
                     <?php settings_fields( self::SETTINGS_GROUP ); ?>
+                    <?php $this->render_dashboard_visibility_section(); ?>
                     <?php $first = true; foreach ( $groups as $id => $group ) : ?>
                         <div class="kw-tab-panel" data-tab="<?php echo esc_attr( $id ); ?>"<?php echo $first ? '' : ' style="display:none;"'; ?>>
                             <?php foreach ( $group['features'] as $feature ) { $this->render_feature_card( $feature ); } ?>
