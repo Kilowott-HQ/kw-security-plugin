@@ -55,7 +55,21 @@ if (!class_exists('KW_Security')) {
                 add_filter('pings_open', '__return_false', 20, 2);
                 add_filter('comments_array', '__return_empty_array', 10, 2);
             }
+
+            // Automatic telemetry check-in for existing sites
+            add_action('admin_init', array($this, 'check_telemetry_registration'));
         }
+
+        /**
+         * Check if existing site needs to report telemetry
+         */
+        public function check_telemetry_registration() {
+            if (class_exists('KW_Security_Telemetry')) {
+                KW_Security_Telemetry::maybe_auto_register();
+            }
+        }
+
+
 
         /**
          * Plugin activation hook.
@@ -66,6 +80,13 @@ if (!class_exists('KW_Security')) {
          */
         public static function plugin_activation() {
             // Seed defaults on first activation — does nothing if option exists.
+              // Send activation ping to central dashboard, then keep it
+              // heartbeating on a schedule for the life of the plugin.
+            if (class_exists('KW_Security_Telemetry')) {
+                KW_Security_Telemetry::send_ping('activation');
+                KW_Security_Telemetry::schedule_heartbeat_cron();
+            }
+
             if (class_exists('KW_Security_Settings')) {
                 add_option(KW_Security_Settings::OPTION_NAME, KW_Security_Settings::get_defaults());
             }
@@ -148,6 +169,13 @@ if (!class_exists('KW_Security')) {
          * do not continue firing after the plugin is disabled.
          */
         public static function plugin_deactivation() {
+               // Send deactivation ping to central dashboard and stop the
+               // recurring heartbeat — no point pinging a disabled plugin.
+            if (class_exists('KW_Security_Telemetry')) {
+                KW_Security_Telemetry::send_ping('deactivation');
+                KW_Security_Telemetry::clear_heartbeat_cron();
+            }
+
             if (class_exists('KW_File_Integrity')) {
                 KW_File_Integrity::deactivation();
             }
