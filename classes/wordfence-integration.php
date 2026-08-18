@@ -104,6 +104,7 @@ YQIDAQAB
                 'malware'   => self::get_malware_summary( $wpdb ),
                 'login'     => self::get_login_summary( $wpdb ),
                 'traffic'   => self::get_traffic_summary( $wpdb ),
+                'settings'  => self::get_settings_summary( $wpdb ),
             ), 200 );
         }
 
@@ -611,6 +612,79 @@ YQIDAQAB
                 );
             }
             return $map;
+        }
+
+        // ----------------------------------------------------------------
+        // Settings — wfConfig (the same table that backs Wordfence's own
+        // "All Options" admin screen at admin.php?page=WordfenceOptions)
+        // ----------------------------------------------------------------
+
+        /**
+         * Read-only mirror of Wordfence's own options table. Deliberately
+         * conservative about what gets surfaced: wfConfig also holds
+         * license keys, HMAC secrets, and other credentials alongside
+         * ordinary on/off settings, so anything that could plausibly be one
+         * of those — by name or by looking like a long/serialized value —
+         * is dropped rather than risk exposing it in the dashboard.
+         */
+        private static function get_settings_summary( $wpdb ) {
+            $table = self::resolve_table( $wpdb, $wpdb->prefix . 'wfConfig' );
+            if ( ! $table ) {
+                return array( 'available' => false );
+            }
+
+            try {
+                $columns    = self::columns( $wpdb, $table );
+                $name_col   = self::pick_column( $columns, array( 'name' ) );
+                $value_col  = self::pick_column( $columns, array( 'val', 'value' ) );
+                if ( ! $name_col || ! $value_col ) {
+                    return array( 'available' => false );
+                }
+
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table/column names fixed internally or drawn from an internal allowlist.
+                $rows = $wpdb->get_results( "SELECT `{$name_col}` AS setting_name, `{$value_col}` AS setting_value FROM {$table} ORDER BY `{$name_col}` ASC LIMIT 500" );
+
+                // Matches on the setting NAME — excluded regardless of what
+                // its value looks like.
+                $sensitive_name_pattern = '/key|secret|token|password|salt|hash|license|credential|auth|nonce|signature|cert/i';
+
+                $settings = array();
+                foreach ( (array) $rows as $row ) {
+                    $name  = (string) $row->setting_name;
+                    $value = $row->setting_value;
+
+                    if ( '' === $name || preg_match( $sensitive_name_pattern, $name ) ) {
+                        continue;
+                    }
+                    if ( ! is_scalar( $value ) ) {
+                        continue;
+                    }
+                    $value = (string) $value;
+
+                    // Empty, overly long (could be a token/blob), or
+                    // serialized-looking values aren't shown here — a
+                    // simple on/off or short enum setting never looks like
+                    // this, but a credential often does.
+                    if ( '' === $value || strlen( $value ) > 60 ) {
+                        continue;
+                    }
+                    if ( 1 === preg_match( '/^[aOs]:\d+:/', $value ) ) {
+                        continue;
+                    }
+
+                    $settings[] = array(
+                        'name'  => $name,
+                        'value' => $value,
+                    );
+                }
+
+                return array(
+                    'available' => true,
+                    'settings'  => $settings,
+                );
+            } catch ( \Throwable $e ) {
+                return array( 'available' => false );
+            }
         }
     }
 
