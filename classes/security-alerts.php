@@ -71,6 +71,17 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             add_action( 'profile_update',      array( $this, 'on_profile_update' ), 10, 2 );
             add_action( 'set_user_role',       array( $this, 'on_set_user_role' ),  10, 3 );
             add_action( 'delete_user',         array( $this, 'on_delete_user' ),    10, 1 );
+            // On multisite, network-wide deletion runs through
+            // wpmu_delete_user() and never fires 'delete_user', so
+            // admin_deleted would never fire on a network install. Both hooks
+            // pass the user ID first and fire before the row is removed, so a
+            // single handler serves both; wpmu_delete_user() does not call
+            // wp_delete_user(), so they cannot double-fire.
+            add_action( 'wpmu_delete_user',    array( $this, 'on_delete_user' ),    10, 1 );
+            // Super Admin is network-wide privilege and is granted/revoked
+            // outside the role system, so set_user_role never sees it.
+            add_action( 'granted_super_admin', array( $this, 'on_granted_super_admin' ), 10, 1 );
+            add_action( 'revoked_super_admin', array( $this, 'on_revoked_super_admin' ), 10, 1 );
             add_action( 'update_option_' . KW_Security_Settings::OPTION_NAME, array( $this, 'on_features_changed' ), 10, 2 );
 
             // ── Plugin / credential / update signals ─────────────────────
@@ -115,6 +126,8 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 // ── Privilege / account / credentials ───────────────────
                 'admin_granted'      => __( 'Administrator privilege granted (new admin or promotion)', 'kw-security' ),
                 'admin_deleted'      => __( 'Administrator account deleted', 'kw-security' ),
+                'super_admin_granted' => __( 'Super Admin / network privilege granted (multisite only — full-network takeover vector)', 'kw-security' ),
+                'super_admin_revoked' => __( 'Super Admin / network privilege revoked (multisite only — often precedes account deletion)', 'kw-security' ),
                 'app_password_created' => __( 'Application Password created (REST/API credential)', 'kw-security' ),
                 'rest_key_generated' => __( 'WooCommerce REST API key created (consumer key/secret)', 'kw-security' ),
                 // ── Files / integrity ───────────────────────────────────
@@ -151,6 +164,8 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 __( 'Privilege / account / credentials', 'kw-security' ) => array(
                     'admin_granted',
                     'admin_deleted',
+                    'super_admin_granted',
+                    'super_admin_revoked',
                     'app_password_created',
                     'rest_key_generated',
                 ),
@@ -758,9 +773,75 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             );
         }
 
+        /**
+         * Super Admin (network-wide) privilege granted. Multisite only.
+         *
+         * This is the highest privilege on the install — it confers every
+         * capability on every site in the network, including sites the user is
+         * not a member of — so it alerts regardless of any per-site role.
+         *
+         * Bound to the past-tense hook so only real changes are reported.
+         * Caveat: defining $GLOBALS['super_admins'] in wp-config.php makes
+         * grant_super_admin()/revoke_super_admin() bail before doing anything,
+         * so networks pinning super admins that way change them outside
+         * WordPress entirely and cannot be alerted on from here.
+         *
+         * @param int $user_id
+         */
+        public function on_granted_super_admin( $user_id ) {
+            $this->notify_super_admin_change( 'super_admin_granted', $user_id, 'granted to', 'Granted by' );
+        }
+
+        /**
+         * Super Admin privilege revoked. Multisite only. Worth alerting on in
+         * its own right: core refuses to delete a live super admin, so
+         * revocation is the required first step of removing one.
+         *
+         * @param int $user_id
+         */
+        public function on_revoked_super_admin( $user_id ) {
+            $this->notify_super_admin_change( 'super_admin_revoked', $user_id, 'revoked from', 'Revoked by' );
+        }
+
+        /**
+         * Shared body for the two super-admin privilege alerts.
+         *
+         * @param string $category
+         * @param int    $user_id
+         * @param string $verb       e.g. 'granted to'.
+         * @param string $actor_label Context key naming who did it.
+         */
+        private function notify_super_admin_change( $category, $user_id, $verb, $actor_label ) {
+            $user  = get_userdata( $user_id );
+            $login = $user ? $user->user_login : ( '#' . (int) $user_id );
+            $this->notify(
+                $category,
+                sprintf( 'Super Admin (network-wide) privilege %s %s', $verb, $login ),
+                array(
+                    'User'       => $login,
+                    $actor_label => $this->current_user_label(),
+                    'IP'         => $this->client_ip(),
+                )
+            );
+        }
+
         public function on_delete_user( $user_id ) {
             $user = get_userdata( $user_id );
-            if ( ! $user || ! in_array( 'administrator', (array) $user->roles, true ) ) {
+            if ( ! $user ) {
+                return;
+            }
+            // Checked explicitly rather than via is_privileged() so the
+            // kw_slack_alert_login_roles filter — which is scoped to logins —
+            // does not silently start governing deletions too. Multisite super
+            // admins are included because they may hold no role on any site.
+            //
+            // Serves both 'delete_user' and 'wpmu_delete_user'. Note core's
+            // wpmu_delete_user() bails on a live super admin, so a super admin
+            // is always demoted before deletion — the demotion is what
+            // super_admin_revoked reports.
+            $privileged = in_array( 'administrator', (array) $user->roles, true )
+                || ( is_multisite() && is_super_admin( $user->ID ) );
+            if ( ! $privileged ) {
                 return;
             }
             $this->notify(
@@ -1201,13 +1282,31 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
-         * Whether a user holds a role we treat as privileged for login
-         * alerts. Defaults to administrator; extend via the filter.
+         * Whether a user is privileged enough to alert on. Defaults to the
+         * administrator role (extend via the filter) plus, on multisite, any
+         * network Super Admin regardless of their per-site role.
          *
          * @param WP_User $user
          * @return bool
          */
         private function is_privileged( $user ) {
+            if ( ! ( $user instanceof WP_User ) ) {
+                return false;
+            }
+            // On multisite, Super Admin is not a role — it lives in the
+            // network's `site_admins` option. A super admin who is not an
+            // explicit member of the site being acted on therefore has an
+            // empty $user->roles, so a role-only check silently skips the
+            // highest-privilege accounts on the install (they can sign in at
+            // any site in the network). Resolve network status first.
+            //
+            // Deliberately not routed through kw_slack_alert_login_roles: a
+            // list of role names cannot express "super admin", so filtering
+            // it could never opt these accounts in. Use the
+            // kw_slack_alert_send filter to drop specific alerts instead.
+            if ( is_multisite() && is_super_admin( $user->ID ) ) {
+                return true;
+            }
             $roles = apply_filters( 'kw_slack_alert_login_roles', array( 'administrator' ) );
             foreach ( (array) $user->roles as $role ) {
                 if ( in_array( $role, (array) $roles, true ) ) {
@@ -1218,7 +1317,16 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         private function primary_role( $user ) {
-            return ( ! empty( $user->roles ) && is_array( $user->roles ) ) ? $user->roles[0] : '';
+            if ( ! empty( $user->roles ) && is_array( $user->roles ) ) {
+                return $user->roles[0];
+            }
+            // A multisite super admin holds no role on sites they are not a
+            // member of, which would otherwise leave the alert's Role field
+            // blank for the most privileged account on the network.
+            if ( is_multisite() && $user instanceof WP_User && is_super_admin( $user->ID ) ) {
+                return 'super-admin';
+            }
+            return '';
         }
 
         /**
