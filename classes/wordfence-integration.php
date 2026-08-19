@@ -28,6 +28,7 @@ if ( ! class_exists( 'KW_Wordfence_Integration' ) ) {
 
         const DASHBOARD_API_NAMESPACE = 'kw-security/v1';
         const DASHBOARD_API_ROUTE     = '/wordfence-summary';
+        const SCAN_API_ROUTE          = '/wordfence-scan';
         const DASHBOARD_TS_WINDOW     = 300; // seconds — reject stale/replayed requests
 
         // Same keypair as the plugin's other dashboard-triggered endpoints
@@ -48,6 +49,12 @@ YQIDAQAB
                 'methods'             => WP_REST_Server::READABLE,
                 'callback'            => array( __CLASS__, 'handle_dashboard_request' ),
                 'permission_callback' => array( __CLASS__, 'authenticate_dashboard_request' ),
+            ) );
+
+            register_rest_route( self::DASHBOARD_API_NAMESPACE, self::SCAN_API_ROUTE, array(
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => array( __CLASS__, 'handle_scan_request' ),
+                'permission_callback' => array( __CLASS__, 'authenticate_scan_request' ),
             ) );
         }
 
@@ -105,6 +112,92 @@ YQIDAQAB
                 'login'     => self::get_login_summary( $wpdb ),
                 'traffic'   => self::get_traffic_summary( $wpdb ),
                 'settings'  => self::get_settings_summary( $wpdb ),
+                // Whether this site has a paid Wordfence license — the
+                // dashboard uses it to show the Central-only checks
+                // (Spamvertising/Spam/Blocklist) as locked or not, matching
+                // Wordfence's own scan-summary bar.
+                'is_paid'   => class_exists( 'wfConfig' ) && method_exists( 'wfConfig', 'get' ) ? (bool) wfConfig::get( 'isPaid' ) : false,
+            ), 200 );
+        }
+
+        /**
+         * Same signature-verification shape as authenticate_dashboard_request,
+         * but for the "wordfence-scan" action specifically — a captured
+         * signature for the read-only summary can't be replayed to trigger
+         * a scan, and vice versa.
+         */
+        public static function authenticate_scan_request( WP_REST_Request $request ) {
+            if ( strpos( home_url(), 'https://' ) === 0 && ! is_ssl() ) {
+                return new WP_Error( 'https_required', 'This endpoint requires HTTPS.', array( 'status' => 403 ) );
+            }
+
+            $installation_id = sanitize_text_field( (string) $request->get_param( 'installation_id' ) );
+            $timestamp        = (int) $request->get_param( 'timestamp' );
+            $signature        = (string) $request->get_param( 'signature' );
+
+            if ( ! $installation_id || ! $timestamp || ! $signature ) {
+                return new WP_Error( 'bad_request', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            if ( ! class_exists( 'KW_Security_Telemetry' ) || $installation_id !== KW_Security_Telemetry::get_site_id() ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            if ( abs( time() - $timestamp ) > self::DASHBOARD_TS_WINDOW ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $message   = $installation_id . '|wordfence-scan|' . $timestamp;
+            $sig_bytes = base64_decode( $signature, true );
+            if ( false === $sig_bytes ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $pub = openssl_get_publickey( self::DASHBOARD_UPDATE_PUBLIC_KEY );
+            if ( false === $pub || 1 !== openssl_verify( $message, $sig_bytes, $pub, OPENSSL_ALGO_SHA256 ) ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            return true;
+        }
+
+        /**
+         * Best-effort trigger for a Wordfence malware/file scan. Wordfence
+         * has reworked its internal scan-starting API more than once across
+         * major versions and doesn't expose a stable public one, so this
+         * tries known entry points from oldest to newest and reports
+         * whichever (if any) actually exists on this site rather than
+         * assuming one. A version this doesn't recognize degrades to a
+         * clear "couldn't start a scan" response — never a fatal error,
+         * since every call here is inside its own try/catch.
+         */
+        public static function handle_scan_request( WP_REST_Request $request ) {
+            if ( ! self::is_wordfence_active() ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => 'Wordfence is not active on this site.' ), 200 );
+            }
+
+            $attempts = array(
+                array( 'wfScanEngine', 'startScan' ),
+                array( 'wfScanner', 'startScan' ),
+                array( 'wordfence', 'scan' ),
+            );
+
+            foreach ( $attempts as $attempt ) {
+                list( $class, $method ) = $attempt;
+                if ( ! class_exists( $class ) || ! method_exists( $class, $method ) ) {
+                    continue;
+                }
+                try {
+                    call_user_func( array( $class, $method ) );
+                    return new WP_REST_Response( array( 'ok' => true, 'message' => 'Scan started.' ), 200 );
+                } catch ( \Throwable $e ) {
+                    continue; // Try the next candidate rather than failing outright.
+                }
+            }
+
+            return new WP_REST_Response( array(
+                'ok'      => false,
+                'message' => "Couldn't start a scan — this Wordfence version's scan API wasn't recognized. Start it manually from Wordfence > Scan on this site.",
             ), 200 );
         }
 

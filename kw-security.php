@@ -7,7 +7,7 @@
   Author: KW Development
   Author URI: https://kilowott.com/
   Requires at least: 5.0
-  Tested up to: 7.0
+  Tested up to: 7.1
  */
 
 // Make sure we don't expose any info if called directly
