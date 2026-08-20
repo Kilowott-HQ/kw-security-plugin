@@ -165,7 +165,10 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
             if ( ! $user || empty( $user->roles ) ) {
                 return 'none';
             }
-            return $user->roles[0];
+            // reset() rather than [0]: pre-6.9 WP_User::get_role_caps() preserves
+            // array keys, so $roles can be array( 1 => 'administrator' ) and [0]
+            // is undefined. See the matching note in security-alerts.php.
+            return reset( $user->roles );
         }
 
         /**

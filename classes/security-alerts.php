@@ -1318,7 +1318,13 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
 
         private function primary_role( $user ) {
             if ( ! empty( $user->roles ) && is_array( $user->roles ) ) {
-                return $user->roles[0];
+                // reset() rather than [0]: before WP 6.9, WP_User::get_role_caps()
+                // built $roles with array_filter( array_keys( $caps ) ), which
+                // preserves keys. A capability granted ahead of the role in the
+                // capabilities meta therefore yields e.g. array( 1 =>
+                // 'administrator' ), where [0] is an undefined index — a PHP 8
+                // warning and a blank Role field on the alert.
+                return reset( $user->roles );
             }
             // A multisite super admin holds no role on sites they are not a
             // member of, which would otherwise leave the alert's Role field
