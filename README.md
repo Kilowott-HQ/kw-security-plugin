@@ -216,57 +216,41 @@ Extend the `init_hooks()` method to add additional security measures.
 
 ## Releasing a New Version
 
-Follow these steps every time you want to push an update to client sites.
+Releases run from the **Release** workflow (Actions tab → Release → *Run workflow*).
+It lints every PHP file, bumps the version in `kw-security.php`, builds the zip with
+the correct `kw-security/` root folder, tags, publishes the GitHub release, and
+announces it in Slack. There is nothing to build or upload by hand.
 
-### Step 1 — Bump the version
+### Step 1 — Write the changelog entry
 
-In `kw-security.php`, update **both** places:
+Add a section for the version you are about to release to
+[`CHANGELOG.md`](CHANGELOG.md), following the format documented at the top of that
+file (`### Problem` / `### Changed` / `### New`).
 
-```php
-// Plugin header (line ~4)
-Version: 26.05.06
+**This is required.** The workflow uses that section as the GitHub release body and
+the Slack announcement, and fails the release if it is missing — before anything is
+pushed or tagged. Commit it on the branch that carries the change, so the notes land
+with the work they describe.
 
-// Constant (line ~18)
-define('KW_SECURITY_VERSION', '26.05.06');
-```
+Version format is `YY.MM.NN` (e.g. `26.08.04` = year 2026, August, release 4). The
+workflow computes the next `NN` for the current month on its own, so you only need
+to know it in order to write the heading.
 
-Version format is `YY.MM.PATCH` (e.g. `26.05.06` = year 2026, May, patch 6).
+### Step 2 — Run the workflow
 
-### Step 2 — Commit and push
+Actions → **Release** → *Run workflow*, with:
 
-```bash
-git add kw-security.php
-git commit -m "chore: bump version to 26.05.06"
-git push
-```
+| Input | Purpose |
+| --- | --- |
+| `version` | Override the auto-computed `YY.MM.NN`. Leave blank normally. |
+| `dry_run` | Lint, extract notes, and build the zip without pushing, tagging, releasing, or announcing. Use this first when in doubt. |
+| `skip_changelog_check` | Release without a `CHANGELOG.md` section. Emergencies only — the release body falls back to auto-generated commit notes. |
+| `slack_webhook_override` | Post the announcement to a different channel for this run. Also enables the announcement during a dry run, which is how you test the message without publishing. |
 
-### Step 3 — Create the release zip
+The workflow pushes the version bump commit to `main` itself, so there is no manual
+bump step.
 
-Clone or pull the repo locally, then run this in PowerShell **from inside the repo's parent directory**:
-
-```powershell
-$tmp = "$env:TEMP\kw-security"
-if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
-Copy-Item -Path ".\kw-security-plugin" -Destination $tmp -Recurse -Force
-Compress-Archive -Path $tmp -DestinationPath ".\kw-security.zip" -Force
-Remove-Item $tmp -Recurse -Force
-```
-
-This creates `kw-security.zip` in the current directory with the correct root folder name (`kw-security\`) that WordPress expects when installing the update.
-
-> **Why the folder name matters:** When WordPress extracts the update zip, it uses the root folder name as the plugin directory. It must match the existing installed folder (`kw-security`) — a mismatch creates a duplicate plugin instead of updating the existing one.
-
-### Step 4 — Publish the GitHub release
-
-1. Go to [github.com/Kilowott-HQ/kw-security-plugin/releases/new](https://github.com/Kilowott-HQ/kw-security-plugin/releases/new)
-2. **Tag:** enter the version number exactly as in the plugin header (e.g. `26.05.06`) — no `v` prefix
-3. **Target:** `main`
-4. **Title:** `KW Security 26.05.06`
-5. **Release notes:** brief summary of what changed
-6. **Attach binaries:** drag and drop `kw-security.zip` from Step 3
-7. Click **Publish release**
-
-### Step 5 — Verify on a site
+### Step 3 — Verify on a site
 
 Visit this URL while logged in as admin on any site running the plugin:
 
@@ -274,13 +258,40 @@ Visit this URL while logged in as admin on any site running the plugin:
 https://example.com/wp-admin/plugins.php?force-check=1
 ```
 
-The update notice should appear under KW Security on the Plugins screen within a few seconds.
+The update notice should appear under KW Security on the Plugins screen within a few
+seconds.
 
-> **Note:** Without `?force-check=1`, WordPress checks for updates every 12 hours. The force-check bypasses the cache immediately.
+> **Note:** Without `?force-check=1`, WordPress checks for updates every 12 hours.
+> The force-check bypasses the cache immediately.
+
+### Configuring the Slack announcement channel
+
+The webhook is resolved in this order, first match wins:
+
+1. the `slack_webhook_override` workflow input (one-off, this run only),
+2. the `RELEASE_SLACK_WEBHOOK_URL` **Actions secret**,
+3. a `RELEASE_SLACK_WEBHOOK_URL` **Actions variable** (handy for a test channel).
+
+Set the secret under repo → Settings → Secrets and variables → Actions, or with
+`gh secret set RELEASE_SLACK_WEBHOOK_URL`. Setting it at the Kilowott-HQ **org**
+level instead lets other repos share the same channel wiring.
+
+To move announcements to another channel, create a new Incoming Webhook in Slack and
+update the secret — no code change and no release needed.
+
+> **This repository is public.** The webhook URL is a credential that lets its holder
+> post to the channel, so it must live in a secret and must never be committed. If
+> none of the three sources resolve, the release still succeeds and the announcement
+> is skipped with a notice.
 
 ---
 
 ## Changelog
+
+> **New entries go in [CHANGELOG.md](CHANGELOG.md), not here.** The release
+> workflow reads that file to build the GitHub release body and the Slack
+> announcement, and a release with no matching section there fails. The history
+> below predates that change and is kept as-is.
 
 ### Version 26.06.05
 - **Slack Security Alerts**: new toggle (enabled by default, inert until configured) that forwards *critical security events* to a Slack channel via an Incoming Webhook. The site posts events directly (per-site), mirroring the File Integrity email-alert approach — there is no central event pipeline
