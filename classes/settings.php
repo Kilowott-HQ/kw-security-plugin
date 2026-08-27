@@ -103,6 +103,21 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         }
 
         /**
+         * The site's current login address when Hide Login URL is on —
+         * same computation toggle-feature.php's dashboard response and
+         * telemetry.php's heartbeat both need, kept in one place so they
+         * can't drift apart.
+         *
+         * @return string
+         */
+        public static function get_login_url() {
+            $slug = get_option( 'whl_page' ) ?: 'login';
+            return get_option( 'permalink_structure' )
+                ? trailingslashit( home_url( $slug ) )
+                : home_url( '/?' . $slug );
+        }
+
+        /**
          * Whether this site should currently be reporting to the Security
          * Dashboard. Defaults to true; the site owner can turn it off here,
          * or the dashboard's own "Remove" action can turn it off remotely
@@ -253,6 +268,15 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => '',
             ) );
 
+            // Link to the Slack channel alerts land in — display-only, never
+            // sent to; the webhook URL above doesn't itself reveal which
+            // channel it posts to.
+            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_CHANNEL_LINK, array(
+                'type'              => 'string',
+                'sanitize_callback' => array( $this, 'sanitize_slack_channel_link' ),
+                'default'           => '',
+            ) );
+
             // Slack member IDs to @-mention on every alert (CSV).
             register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_MENTION, array(
                 'type'              => 'string',
@@ -339,6 +363,19 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 return '';
             }
             return $value;
+        }
+
+        /**
+         * Sanitize the Slack channel link — a plain URL, not validated
+         * against a specific host the way the webhook is: this value is
+         * never sent to, only opened by a human, so there's no payload to
+         * protect against redirection.
+         *
+         * @param mixed $value
+         * @return string
+         */
+        public function sanitize_slack_channel_link( $value ) {
+            return esc_url_raw( trim( (string) $value ) );
         }
 
         public function sanitize_slack_mention( $value ) {
@@ -751,6 +788,27 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             <?php
         }
 
+        public function render_slack_channel_link() {
+            $value = KW_Security_Alerts::get_channel_link();
+            ?>
+            <input
+                type="url"
+                id="kw_slack_channel_link"
+                name="<?php echo esc_attr( KW_Security_Alerts::OPTION_CHANNEL_LINK ); ?>"
+                value="<?php echo esc_attr( $value ); ?>"
+                class="regular-text"
+                placeholder="https://app.slack.com/client/T000/C000"
+                autocomplete="off"
+                spellcheck="false"
+            />
+            <p class="description">
+                <?php
+                echo wp_kses_post( __( 'Optional. In Slack, right-click the channel name → <em>Copy link</em>, and paste it here — this is only used for the Security Dashboard\'s "View Channel" link, never to send anything.', 'kw-security' ) );
+                ?>
+            </p>
+            <?php
+        }
+
         public function render_slack_mention() {
             $overridden = KW_Security_Alerts::is_mention_overridden();
             $value      = $overridden ? KW_Security_Alerts::get_mention_string() : get_option( KW_Security_Alerts::OPTION_MENTION, '' );
@@ -1098,6 +1156,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'slack_alerts' => array(
                     array( 'label' => __( 'Webhook URL', 'kw-security' ),      'cb' => 'render_slack_webhook' ),
+                    array( 'label' => __( 'Channel Link', 'kw-security' ),     'cb' => 'render_slack_channel_link' ),
                     array( 'label' => __( 'Notify (mention)', 'kw-security' ), 'cb' => 'render_slack_mention' ),
                     array( 'label' => __( 'Events to send', 'kw-security' ),   'cb' => 'render_slack_categories' ),
                     array( 'label' => __( 'Wordfence relay', 'kw-security' ),  'cb' => 'render_wordfence_critical_only' ),

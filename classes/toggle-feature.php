@@ -135,10 +135,7 @@ YQIDAQAB
             // dashboard exactly where the login page now lives instead of a
             // bare on/off confirmation.
             if ('hide_login_url' === $feature && !empty($clean[$feature])) {
-                $slug = get_option('whl_page') ?: 'login';
-                $response['login_url'] = get_option('permalink_structure')
-                    ? trailingslashit(home_url($slug))
-                    : home_url('/?' . $slug);
+                $response['login_url'] = KW_Security_Settings::get_login_url();
             }
 
             return new WP_REST_Response($response, 200);

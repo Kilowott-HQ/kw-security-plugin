@@ -181,6 +181,16 @@ if (!defined('ABSPATH')) {
                     'update_available'  => $update_info['update_available'],
                     'latest_version'    => $update_info['latest_version'],
                     'security_features' => self::get_security_features(),
+                    // Only meaningful once Hide Login URL is on; null otherwise
+                    // so the dashboard doesn't show a stale address.
+                    'login_url'         => ( class_exists('KW_Security_Settings') && KW_Security_Settings::is_enabled('hide_login_url') )
+                        ? KW_Security_Settings::get_login_url()
+                        : null,
+                    // Resolves constant/env/option precedence itself — an
+                    // overridden webhook (wp-config.php / environment) shows
+                    // up here too, not just one stored in the database.
+                    'slack_webhook_url'  => class_exists('KW_Security_Alerts') ? ( KW_Security_Alerts::get_webhook_url() ?: null ) : null,
+                    'slack_channel_link' => class_exists('KW_Security_Alerts') ? ( KW_Security_Alerts::get_channel_link() ?: null ) : null,
                 )),
             ));
 

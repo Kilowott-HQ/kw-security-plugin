@@ -35,6 +35,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
     class KW_Security_Alerts {
 
         const OPTION_WEBHOOK    = 'kw_slack_webhook';
+        const OPTION_CHANNEL_LINK = 'kw_slack_channel_link'; // display-only bookmark, not used to send anything.
         const OPTION_CATEGORIES = 'kw_slack_alert_categories';
         const OPTION_MENTION    = 'kw_slack_mention';
         const OPTION_FM_BASELINE = 'kw_slack_fm_baseline_done'; // one-time file-manager sweep flag.
@@ -297,6 +298,19 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         public static function is_webhook_overridden() {
             return ( defined( self::CONST_WEBHOOK ) && constant( self::CONST_WEBHOOK ) )
                 || (bool) getenv( self::ENV_WEBHOOK );
+        }
+
+        /**
+         * Link to the Slack channel alerts land in — a Slack Incoming
+         * Webhook URL itself doesn't encode which channel it posts to (that
+         * binding lives only on Slack's servers), so this is a second,
+         * separately-pasted value purely for the dashboard's "View Channel"
+         * link. Never used to send anything.
+         *
+         * @return string
+         */
+        public static function get_channel_link() {
+            return (string) get_option( self::OPTION_CHANNEL_LINK, '' );
         }
 
         /**
