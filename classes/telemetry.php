@@ -100,10 +100,17 @@ if (!defined('ABSPATH')) {
 
         /**
          * Read whether a newer version is available from WordPress's own
-         * update-plugins transient — populated by classes/updater.php's
-         * GitHub-backed update checker on its normal schedule. This is a
-         * read of already-cached state, not a live check, so it costs
-         * nothing extra per heartbeat.
+         * update-plugins transient, forcing a fresh GitHub check first
+         * rather than trusting whatever's already cached there.
+         *
+         * classes/updater.php's own PUC instance only refreshes this
+         * transient on its default ~12-hour schedule, which left a
+         * just-released update invisible on the dashboard for up to that
+         * long — even though clicking "Update" already worked, since
+         * classes/update-trigger.php forces this same check before
+         * upgrading. Piggybacking it onto the hourly heartbeat cron this
+         * already runs on costs one extra GitHub call per site per hour,
+         * comfortably inside GitHub's per-IP rate limit.
          */
         private static function get_update_info() {
             $plugin_slug = defined('KW_SECURITY_SLUG') ? KW_SECURITY_SLUG : 'kw-security';
@@ -113,6 +120,22 @@ if (!defined('ABSPATH')) {
             if (!function_exists('get_site_transient')) {
                 require_once ABSPATH . 'wp-admin/includes/plugin.php';
             }
+
+            if (defined('KW_SECURITY_PLUGIN_FILE') && defined('KW_SECURITY_PLUGIN_DIR')) {
+                if (!class_exists('YahnisElsts\PluginUpdateChecker\v5\PucFactory')) {
+                    require_once KW_SECURITY_PLUGIN_DIR . 'vendor/plugin-update-checker/load-v5p6.php';
+                }
+                // Same repo/slug as classes/updater.php and
+                // classes/update-trigger.php — this just forces an
+                // immediate check instead of waiting for PUC's own schedule.
+                $checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+                    'https://github.com/Kilowott-HQ/kw-security-plugin/',
+                    KW_SECURITY_PLUGIN_FILE,
+                    'kw-security'
+                );
+                $checker->checkForUpdates();
+            }
+
             $updates = get_site_transient('update_plugins');
 
             $update_available = is_object($updates) && isset($updates->response[$plugin_file]);
