@@ -54,46 +54,18 @@ automatically, so add the heading for the version you are about to release.
 ## 26.08.04
 
 ### What's new
-- A Slack alert now fires when a site has an update waiting for KW Security or
-  Wordfence, carrying an excerpt of what that update contains — so you can tell a
-  security patch from a routine one without opening the site.
-- A Slack alert now fires when either security plugin is switched on or off on a site.
-  Deactivation previously only covered Wordfence; it now covers KW Security too, so
-  neither plugin can be turned off quietly.
-- A Wordfence security release now produces one alert per site instead of two.
-- Plugins can be activated or deactivated on any site directly from the Security
-  Dashboard, without logging into that site.
-- Every site now reports its custom login URL (when the hide-login feature is on) and
-  the Slack channel its alerts go to, so there is one place to confirm a site is
-  actually wired up rather than silently sending nowhere.
-- A new "Channel Link" setting under Alerts & Integrations, for bookmarking the Slack
-  channel a site posts to. It is only used for the dashboard's "View Channel" link.
-- Sites no longer get stuck showing "Inactive" on the dashboard after a remote update.
-- Slack alerts now show who made a change on older WordPress versions, where the role
-  field could come through blank.
+- Alert when a site has a KW Security or Wordfence update pending
+- Alert when either security plugin is switched on or off
+- Activate or deactivate plugins on any site from the KW Security dashboard, without
+  logging into that site
+- Every site reports its custom login URL (when hide-login is on) and which Slack
+  channel its alerts go to
 
 ### Why it matters
-- A client site was compromised. Everything here shortens the gap between something
-  changing on a site and somebody knowing about it.
-- Unpatched security plugins were the largest blind spot. Sites sat on old versions
-  until somebody happened to open that particular dashboard, so a published fix could
-  go unapplied for weeks — which is the window an attacker needs.
-- A security plugin being switched off was invisible. That is both a routine attacker
-  move after gaining access and an easy accident during other work, and either way the
-  site was left unprotected with nobody told.
-- Both new alerts default to on for every site, so no site has to be configured before
-  it starts reporting.
-- Toggling a plugin remotely means responding without first hunting for that site's
-  credentials — taking a compromised plugin offline, or restoring protection across
-  several sites, in the minutes after a discovery rather than the hours.
-- Reporting the login URL and Slack channel on every heartbeat closes a verification
-  gap: a site whose alerts were never wired up looked exactly like a site with nothing
-  to report. Now the difference is visible from the dashboard.
-- The blank role field affected WordPress 5.0 through 6.8 — nearly the whole supported
-  range — and removed the "who did this" line from alerts at exactly the moment it
-  matters most.
-- A site wrongly showing "Inactive" is indistinguishable from one genuinely
-  unprotected. Fixing it means the dashboard can be trusted at a glance.
+- Deactivation was only alerting for Wordfence before
+- Activation was not alerting on either Wordfence or this plugin before
+- Unpatched security plugins were a blind spot
+- A security plugin being switched off was invisible
 
 ### Changed
 - `wordfence_deactivated` now covers KW Security as well as Wordfence and is relabelled
