@@ -34,6 +34,36 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.06
+
+### Problem
+- A release summary had one provider behind it and no retries: a single HTTP
+  response was the whole attempt. Gemini answered `503 high demand` on the
+  26.08.05 dry run — a transient spike that clears in seconds — and the
+  announcement dropped straight to raw changelog text.
+- The collapsed "Technical detail" block on a release repeated the whole
+  changelog section, so "Problem" said in developer voice what "Why it matters"
+  had just said in plain English two lines above it.
+
+### Changed
+- The summary now tries two providers in order, Groq first and Gemini second,
+  each retried three times (about 2s, 6s, then 18s apart) on a rate limit, a
+  timeout, or a 5xx. A bad key or an unknown model is not retried and hands over
+  to the next provider immediately, as does a reply that comes back missing the
+  What or the Why section. Only when both providers are exhausted does the
+  release fall back to the changelog text.
+- Either `GROQ_API_KEY` or `GEMINI_API_KEY` on its own is enough to produce a
+  summary. Both free tiers; with neither key the release still succeeds.
+- The run summary and the release log now name which provider and model actually
+  wrote the text that went out.
+- The collapsed "Technical detail" block carries `### Changed` and `### New`
+  only. `### Problem` still appears when no plain-language summary was produced,
+  where it is the only thing explaining why the release exists.
+
+### New
+- `GROQ_API_KEY` secret plus optional `GROQ_MODEL` and `GROQ_API_URL` variables,
+  defaulting to `openai/gpt-oss-120b` on Groq's OpenAI-compatible endpoint.
+
 ## 26.08.05
 
 ### Problem
