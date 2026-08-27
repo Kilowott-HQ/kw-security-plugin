@@ -276,7 +276,11 @@ written for non-technical readers:
 
 These are generated from the technical `CHANGELOG.md` section, the `release_context`
 paragraph, and the change subjects since the last release. The GitHub release body keeps
-the technical changelog underneath, in a collapsed **Technical detail** block.
+the technical changelog underneath, in a collapsed **Technical detail** block — `###
+Changed` and `### New` only. `### Problem` is left out of that block, because **Why it
+matters** directly above it already covers the same ground for the same reader. It still
+appears when there is no summary at all, where it is the only thing explaining why the
+release exists.
 
 The generated text is written to the workflow run summary on every release, so there is
 always a record of exactly what was posted. To see it before it goes out, do a dry run
@@ -301,17 +305,30 @@ labelled as such, and the run logs a warning.
 
 ### Configuring the summary
 
+Two providers are tried in order, each on its own free tier. Groq answers first; Gemini
+covers Groq being down. A single provider is a single point of failure — one busy
+afternoon on the model host is enough to drop a release to raw changelog text.
+
 | Setting | Type | Purpose |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | secret | Enables the plain-language summary. Without it the step is skipped. |
+| `GROQ_API_KEY` | secret | Primary provider. Free tier, no card required — get one at [console.groq.com](https://console.groq.com/keys). |
+| `GROQ_MODEL` | variable | Model to use. Defaults to `openai/gpt-oss-120b`. |
+| `GROQ_API_URL` | variable | Full endpoint URL. Defaults to Groq's OpenAI-compatible chat-completions endpoint. |
+| `GEMINI_API_KEY` | secret | Fallback provider. Free tier at [aistudio.google.com](https://aistudio.google.com/apikey). |
 | `GEMINI_MODEL` | variable | Model to use. Defaults to `gemini-3.7-flash`. |
 | `GEMINI_API_URL` | variable | API base URL. Defaults to Google's `v1beta` models endpoint. |
 
-Model and endpoint are variables rather than hard-coded so that a Google API change is a
-settings change, not a code change.
+Either key on its own is enough; with neither, the step is skipped. Each provider is
+retried three times (roughly 2s, 6s, then 18s apart) on a rate limit, a timeout, or a 5xx
+— the transient `503 high demand` that used to lose a summary now costs a few seconds
+instead. A bad key or an unknown model name is not retried; it hands straight over to the
+next provider, as does a reply that comes back missing one of the two sections.
 
-Note that the changelog text and change subjects are sent to Google to produce the
-summary. This repository is public, so nothing confidential leaves the project.
+Models and endpoints are variables rather than hard-coded so that a provider-side change
+is a settings change, not a code change.
+
+Note that the changelog text and change subjects are sent to whichever provider answers.
+This repository is public, so nothing confidential leaves the project.
 
 ### Configuring the Slack announcement channel
 
