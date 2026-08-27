@@ -130,7 +130,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'slack_alerts' => array(
                     'label'       => __( 'Slack Security Alerts', 'kw-security' ),
-                    'description' => __( 'Sends critical security events — brute-force lockouts, administrator privilege changes, blocked malicious uploads, file-integrity anomalies, and disabled defenses — to a Slack channel via an Incoming Webhook. Configure the webhook and choose which events to send below (or via the <code>KW_SLACK_WEBHOOK_URL</code> constant / environment variable). Inert until a webhook URL is set.', 'kw-security' ),
+                    'description' => __( 'Sends critical security events — brute-force lockouts, administrator privilege changes, blocked malicious uploads, file-integrity anomalies, and disabled defenses — to a Slack channel via an Incoming Webhook. Also reports when KW Security or Wordfence has an update available (with the release notes), and when either is activated or deactivated. Configure the webhook and choose which events to send below (or via the <code>KW_SLACK_WEBHOOK_URL</code> constant / environment variable). Inert until a webhook URL is set.', 'kw-security' ),
                 ),
                 'comments' => array(
                     'label'       => __( 'Disable Comments', 'kw-security' ),
