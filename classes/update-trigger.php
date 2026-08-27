@@ -160,6 +160,20 @@ YQIDAQAB
                 activate_plugin($plugin_file_relative);
             }
 
+            // Don't rely on activate_plugin() above having fired the real
+            // 'activate_{$plugin}' hook — it's a silent no-op if WordPress (or
+            // a persistent object cache serving a stale active_plugins read)
+            // already believed the plugin was active, which would skip
+            // schedule_heartbeat_cron() entirely. Without that cron
+            // rescheduled, this site stops heartbeating and the dashboard is
+            // stuck showing it Inactive until someone manually deactivates
+            // and reactivates the plugin by hand. Guarantee both directly
+            // instead of depending on the hook chain having run.
+            if ($was_active && is_plugin_active($plugin_file_relative) && class_exists('KW_Security_Telemetry')) {
+                KW_Security_Telemetry::schedule_heartbeat_cron();
+                KW_Security_Telemetry::send_ping('activation');
+            }
+
             // Read the version straight from the freshly-written file header
             // rather than the KW_SECURITY_VERSION constant, which still
             // holds the pre-upgrade value for the remainder of this request.
