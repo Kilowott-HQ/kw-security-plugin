@@ -73,6 +73,9 @@ automatically, so add the heading for the version you are about to release.
   KW Security. Both default on.
 - The summary prompt lives in `.github/release-summary-prompt.md` so tone and
   emphasis can be tuned without touching the release workflow.
+- A "don't post to Slack" checkbox on the release workflow, for small fixes that
+  don't warrant a channel update. The release still publishes with its full notes;
+  only the channel post is suppressed, and the run log records why nothing posted.
 - Configurable via a `GEMINI_API_KEY` secret plus optional `GEMINI_MODEL` and
   `GEMINI_API_URL` variables. Without the key the release still succeeds and the
   announcement falls back to the changelog text, labelled as such.

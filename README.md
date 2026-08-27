@@ -245,6 +245,7 @@ Actions → **Release** → *Run workflow*, with:
 | `version` | Override the auto-computed `YY.MM.NN`. Leave blank normally. |
 | `dry_run` | Lint, extract notes, and build the zip without pushing, tagging, releasing, or announcing. Use this first when in doubt. |
 | `skip_changelog_check` | Release without a `CHANGELOG.md` section. Emergencies only — the release body falls back to auto-generated commit notes. |
+| `skip_announcement` | Don't post to Slack. For small fixes that don't warrant a channel update. The release still publishes with full notes; only the channel post is suppressed. |
 | `release_context` | A paragraph of business context for this release — what prompted it, what it unblocks. This is the main input the summary can't work out from the code, and it's what makes the "Why it matters" section useful. |
 | `slack_webhook_override` | Post the announcement to a different channel for this run. Also enables the announcement during a dry run, which is how you test the message without publishing. |
 
@@ -283,6 +284,16 @@ with `slack_webhook_override` pointed at a test channel.
 
 **To change how it's written, edit [`.github/release-summary-prompt.md`](.github/release-summary-prompt.md)** —
 tone, length, what to emphasise, what to avoid. No workflow change needed.
+
+For a small fix that doesn't warrant a channel update, tick **`skip_announcement`**. The
+release still publishes with its full notes — only the Slack post is suppressed, and the
+run log says so.
+
+> Note that `skip_announcement` silences the *release* channel only. Sites running KW
+> Security have their own per-site Slack alerts, and one of those fires when an update
+> becomes available (see the **Update available for KW Security or Wordfence** alert
+> category). A quiet release is not an invisible one; to silence that too, turn the
+> category off per site under **Settings → KW Security**.
 
 If the summary can't be generated — no API key, a rate limit, an unusable reply — the
 release still succeeds. The announcement falls back to the technical changelog text,

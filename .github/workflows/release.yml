@@ -26,6 +26,9 @@ name: Release
 #     (falls back to --generate-notes). Emergencies only.
 #   - release_context (optional): a paragraph of business context for this
 #     release. The main input the summary cannot derive from the code itself.
+#   - skip_announcement (optional): release without posting to Slack. The
+#     release notes are still written and the release still publishes; only the
+#     channel post is suppressed.
 #   - slack_webhook_override (optional): post the announcement elsewhere for this
 #     run. Also enables the announcement during a dry run, which is how the
 #     message gets tested without publishing.
@@ -60,6 +63,11 @@ on:
         default: ""
       skip_changelog_check:
         description: "Release without a CHANGELOG.md section (emergencies only)"
+        required: false
+        type: boolean
+        default: false
+      skip_announcement:
+        description: "Don't post to Slack (for small fixes that don't need a channel update)"
         required: false
         type: boolean
         default: false
@@ -452,6 +460,11 @@ jobs:
           path: kw-security.zip
           retention-days: 14
 
+      - name: Note that the announcement was skipped
+        if: ${{ github.event.inputs.skip_announcement == 'true' }}
+        run: |
+          echo "::notice::skip_announcement was set, so nothing was posted to Slack. The release and its notes are unaffected."
+
       - name: Dry run summary
         if: ${{ github.event.inputs.dry_run == 'true' }}
         run: |
@@ -523,7 +536,11 @@ jobs:
       # also runs during a dry run when slack_webhook_override is set, which is
       # how the message gets previewed without publishing anything.
       - name: Announce release in Slack
-        if: ${{ github.event.inputs.dry_run != 'true' || github.event.inputs.slack_webhook_override != '' }}
+        # Parens are load-bearing: && binds tighter than || in GitHub
+        # expressions, so without them this would read as
+        # skip_announcement != true && dry_run != true, OR override != ''
+        # — and an override would post even when the announcement was skipped.
+        if: ${{ github.event.inputs.skip_announcement != 'true' && (github.event.inputs.dry_run != 'true' || github.event.inputs.slack_webhook_override != '') }}
         continue-on-error: true
         env:
           # Resolution order mirrors the plugin's own webhook chain (constant →
