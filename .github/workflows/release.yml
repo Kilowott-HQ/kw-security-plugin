@@ -8,9 +8,11 @@ name: Release
 #   3. Bumps Version: header + KW_SECURITY_VERSION constant in kw-security.php
 #   4. Commits the bump back to main (with [skip ci] so this doesn't loop)
 #   5. Builds kw-security.zip with root folder "kw-security" (required by PUC)
-#   6. Tags + creates a GitHub Release whose body is the CHANGELOG.md section for
-#      this version, with kw-security.zip attached
-#   7. Announces the release in Slack
+#   6. Rewrites the technical changelog into a plain-language WHAT / WHY via the
+#      Gemini API (best-effort; falls back to the changelog text)
+#   7. Tags + creates a GitHub Release whose body is WHAT / WHY with the technical
+#      detail collapsed underneath, with kw-security.zip attached
+#   8. Announces the release in Slack
 #
 # CHANGELOG.md is the source of release notes and is REQUIRED: the extract step
 # runs before anything is pushed/tagged/published, so a missing section fails the
@@ -22,9 +24,19 @@ name: Release
 #   - dry_run (optional): compute + build + lint, but don't push/tag/release
 #   - skip_changelog_check (optional): release without a CHANGELOG.md section
 #     (falls back to --generate-notes). Emergencies only.
+#   - release_context (optional): a paragraph of business context for this
+#     release. The main input the summary cannot derive from the code itself.
 #   - slack_webhook_override (optional): post the announcement elsewhere for this
 #     run. Also enables the announcement during a dry run, which is how the
 #     message gets tested without publishing.
+#
+# Configuration (all optional, none required for a release to succeed):
+#   secrets.RELEASE_SLACK_WEBHOOK_URL  - where announcements go
+#   secrets.GEMINI_API_KEY             - enables the plain-language summary
+#   vars.GEMINI_MODEL                  - defaults to gemini-3.7-flash
+#   vars.GEMINI_API_URL                - defaults to the v1beta models endpoint
+# The summary prompt lives in .github/release-summary-prompt.md so it can be
+# tuned without touching this workflow.
 #
 # Branch protection note: this workflow pushes directly to main. If main has
 # protection requiring PR review, the github-actions[bot] needs a bypass rule,
@@ -42,6 +54,10 @@ on:
         required: false
         type: boolean
         default: false
+      release_context:
+        description: "Business context for this release, in a paragraph (feeds the plain-language WHAT/WHY)"
+        required: false
+        default: ""
       skip_changelog_check:
         description: "Release without a CHANGELOG.md section (emergencies only)"
         required: false
@@ -173,20 +189,213 @@ jobs:
 
           echo "have_notes=true" >> "$GITHUB_OUTPUT"
 
-          # Release body: the changelog section plus a compare footer.
-          NOTES="$RUNNER_TEMP/notes.md"
-          cat "$CHANGELOG" > "$NOTES"
+          echo "Technical changelog section for ${V}:"
+          cat "$CHANGELOG"
+
+      # Turns the technical changelog into the WHAT / WHY the channel actually
+      # reads. Best-effort by design: continue-on-error plus an explicit
+      # have_summary output, so a missing key, a rate limit, or a reply that
+      # drifts from the contract degrades to the hand-written changelog rather
+      # than blocking a release.
+      #
+      # Deliberately NOT using the structured-output / responseSchema surface:
+      # its docs describe a different request shape than the generateContent
+      # reference, so instead the model is asked for two delimited markdown
+      # sections which are parsed with awk. That works on either API generation.
+      # Model and endpoint come from Actions variables, so a Google API change is
+      # a config change rather than a code change.
+      - name: Summarize release for a non-technical audience
+        id: summary
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY:  ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL:    ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_URL:  ${{ vars.GEMINI_API_URL }}
+          V:               ${{ steps.version.outputs.version }}
+          PREV_TAG:        ${{ steps.notes.outputs.prev_tag }}
+          RELEASE_CONTEXT: ${{ github.event.inputs.release_context }}
+          PROMPT_FILE:     .github/release-summary-prompt.md
+        run: |
+          set -uo pipefail
+
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "::notice::No GEMINI_API_KEY secret set. Skipping the plain-language summary; the announcement falls back to the changelog text."
+            echo "have_summary=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ ! -s "$PROMPT_FILE" ]; then
+            echo "::warning::${PROMPT_FILE} is missing or empty. Falling back to the changelog text."
+            echo "have_summary=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MODEL="${GEMINI_MODEL:-gemini-3.7-flash}"
+          API_BASE="${GEMINI_API_URL:-https://generativelanguage.googleapis.com/v1beta/models}"
+
+          # Commit subjects since the last tag, minus the workflow's own version
+          # bump commits, which say nothing about the release.
+          if [ -n "${PREV_TAG:-}" ]; then
+            COMMIT_LOG=$(git log --pretty=%s "${PREV_TAG}..HEAD" | grep -vE '^chore: bump version' || true)
+          else
+            COMMIT_LOG=$(git log --pretty=%s | grep -vE '^chore: bump version' || true)
+          fi
+
+          CHANGELOG_TEXT=$(cat "$RUNNER_TEMP/changelog.md" 2>/dev/null || true)
+
+          USER_PROMPT=$(printf 'Version being released: %s\n\n=== Context from the person running the release ===\n%s\n\n=== Technical changelog for this version ===\n%s\n\n=== Change subjects since the previous release ===\n%s\n' \
+            "$V" \
+            "${RELEASE_CONTEXT:-(none supplied)}" \
+            "${CHANGELOG_TEXT:-(none)}" \
+            "${COMMIT_LOG:-(none)}")
+
+          # jq --arg encodes both prompts as JSON data. The changelog and the
+          # context paragraph are free text and would otherwise break the body.
+          REQUEST=$(jq -n \
+            --rawfile sys "$PROMPT_FILE" \
+            --arg user "$USER_PROMPT" \
+            '{
+              systemInstruction: { parts: [ { text: $sys } ] },
+              contents: [ { role: "user", parts: [ { text: $user } ] } ],
+              generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
+            }')
+
+          HTTP_CODE=$(curl -sS -o "$RUNNER_TEMP/gemini.json" -w '%{http_code}' \
+            --max-time 90 \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            -H "x-goog-api-key: ${GEMINI_API_KEY}" \
+            --data-binary "$REQUEST" \
+            "${API_BASE}/${MODEL}:generateContent") || {
+              echo "::warning::Could not reach the Gemini API. Falling back to the changelog text."
+              echo "have_summary=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            # Surface only the message: an error body can echo request content.
+            REASON=$(jq -r '.error.message // "no message"' "$RUNNER_TEMP/gemini.json" 2>/dev/null || echo "unparseable response")
+            echo "::warning::Gemini returned HTTP ${HTTP_CODE} (${REASON}). Falling back to the changelog text."
+            echo "have_summary=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TEXT=$(jq -r '[.candidates[0].content.parts[]?.text] | join("")' "$RUNNER_TEMP/gemini.json" 2>/dev/null)
+          if [ -z "$TEXT" ] || [ "$TEXT" = "null" ]; then
+            FINISH=$(jq -r '.candidates[0].finishReason // "unknown"' "$RUNNER_TEMP/gemini.json" 2>/dev/null || echo unknown)
+            echo "::warning::Gemini returned no usable text (finish reason: ${FINISH}). Falling back to the changelog text."
+            echo "have_summary=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$TEXT" > "$RUNNER_TEMP/summary-raw.md"
+
+          # Split on the two agreed headings, so a reply that drifts from the
+          # contract fails here instead of posting half a message.
+          awk 'tolower($0) ~ /^#{1,6}[[:space:]]*what/ { s="what"; next }
+               tolower($0) ~ /^#{1,6}[[:space:]]*why/  { s="why";  next }
+               s == "what" { print }' "$RUNNER_TEMP/summary-raw.md" > "$RUNNER_TEMP/what.md"
+          awk 'tolower($0) ~ /^#{1,6}[[:space:]]*why/  { s="why";  next }
+               s == "why" { print }' "$RUNNER_TEMP/summary-raw.md" > "$RUNNER_TEMP/why.md"
+
+          for f in "$RUNNER_TEMP/what.md" "$RUNNER_TEMP/why.md"; do
+            sed -i -e '/./,$!d' "$f"
+            printf '%s\n' "$(cat "$f")" > "$f"
+          done
+
+          # Test for real content, not file size: the trim above rewrites an
+          # empty file as a single newline, so -s would call it non-empty and a
+          # reply missing one section would post an empty block (which Slack
+          # rejects outright).
+          has_content() { grep -q '[^[:space:]]' "$1" 2>/dev/null; }
+
+          if ! has_content "$RUNNER_TEMP/what.md" || ! has_content "$RUNNER_TEMP/why.md"; then
+            echo "::warning::The reply did not contain both a What and a Why section. Falling back to the changelog text."
+            {
+              echo "## Discarded summary for ${V}"
+              echo "The reply did not follow the two-section contract, so the changelog text was used instead."
+              echo '```'
+              cat "$RUNNER_TEMP/summary-raw.md"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "have_summary=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "have_summary=true" >> "$GITHUB_OUTPUT"
+
+          # Logged so every release keeps a record of exactly what was generated,
+          # reviewable on the run even though it posts without an approval step.
           {
+            echo "## Plain-language summary for ${V}"
+            echo "_Generated by ${MODEL}. This is what was posted to Slack and used as the release body._"
             echo
+            echo "### What"
+            cat "$RUNNER_TEMP/what.md"
+            echo
+            echo "### Why"
+            cat "$RUNNER_TEMP/why.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Generated summary:"
+          cat "$RUNNER_TEMP/what.md" "$RUNNER_TEMP/why.md"
+
+      # Release body: plain language first, technical detail collapsed underneath,
+      # so one page serves both a client-facing reader and a developer. The
+      # WordPress plugin reads this body back to show "what's new" in its own
+      # update alert, cutting it at the <details> marker.
+      - name: Compose release notes
+        id: body
+        env:
+          V:            ${{ steps.version.outputs.version }}
+          PREV_TAG:     ${{ steps.notes.outputs.prev_tag }}
+          COMMITS:      ${{ steps.notes.outputs.commits }}
+          HAVE_NOTES:   ${{ steps.notes.outputs.have_notes }}
+          HAVE_SUMMARY: ${{ steps.summary.outputs.have_summary }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/notes.md"
+          : > "$NOTES"
+
+          if [ "${HAVE_SUMMARY:-false}" = "true" ]; then
+            {
+              echo "## What's new"
+              echo
+              cat "$RUNNER_TEMP/what.md"
+              echo
+              echo "## Why it matters"
+              echo
+              cat "$RUNNER_TEMP/why.md"
+              echo
+            } >> "$NOTES"
+          fi
+
+          if [ "${HAVE_NOTES:-false}" = "true" ]; then
+            {
+              if [ "${HAVE_SUMMARY:-false}" = "true" ]; then
+                echo "<details>"
+                echo "<summary>Technical detail</summary>"
+                echo
+                cat "$RUNNER_TEMP/changelog.md"
+                echo
+                echo "</details>"
+              else
+                cat "$RUNNER_TEMP/changelog.md"
+              fi
+              echo
+            } >> "$NOTES"
+          fi
+
+          {
             echo "---"
-            if [ -n "$PREV_TAG" ]; then
+            if [ -n "${PREV_TAG:-}" ]; then
               echo "[Full commit log since ${PREV_TAG}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${V}) · ${COMMITS} commits"
+              echo
             fi
-            echo
             echo "Sites running KW Security see this update on their next check (~12h), or immediately via \`/wp-admin/plugins.php?force-check=1\`."
           } >> "$NOTES"
 
-          echo "Release notes:"
+          echo "Release body:"
           cat "$NOTES"
 
       - name: Bump version in kw-security.php
@@ -289,10 +498,10 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.version.outputs.version }}"
-          # The release body is the CHANGELOG.md section for this version, so
-          # anything reading the Releases API gets the same structured notes the
-          # team wrote. --generate-notes is only the emergency fallback.
-          if [ "${{ steps.notes.outputs.have_notes }}" = "true" ]; then
+          # Body was assembled by the "Compose release notes" step: plain-language
+          # WHAT/WHY on top, technical detail collapsed underneath. The plugin
+          # reads this back to show "what's new" in its own update alert.
+          if [ -s "$RUNNER_TEMP/notes.md" ]; then
             gh release create "$V" \
               --title "$V" \
               --notes-file "$RUNNER_TEMP/notes.md" \
@@ -309,6 +518,10 @@ jobs:
       # misconfigured webhook never fails an otherwise-successful release. It
       # also runs during a dry run when slack_webhook_override is set, which is
       # how the message gets tested without publishing anything.
+      # Announcement is best-effort: continue-on-error means a Slack outage or a
+      # misconfigured webhook never fails an otherwise-successful release. It
+      # also runs during a dry run when slack_webhook_override is set, which is
+      # how the message gets previewed without publishing anything.
       - name: Announce release in Slack
         if: ${{ github.event.inputs.dry_run != 'true' || github.event.inputs.slack_webhook_override != '' }}
         continue-on-error: true
@@ -322,6 +535,7 @@ jobs:
           PREV_TAG:         ${{ steps.notes.outputs.prev_tag }}
           COMMITS:          ${{ steps.notes.outputs.commits }}
           HAVE_NOTES:       ${{ steps.notes.outputs.have_notes }}
+          HAVE_SUMMARY:     ${{ steps.summary.outputs.have_summary }}
           IS_DRY_RUN:       ${{ github.event.inputs.dry_run }}
         run: |
           set -uo pipefail
@@ -343,7 +557,7 @@ jobs:
           esac
 
           RELEASE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${V}"
-          if [ -n "$PREV_TAG" ]; then
+          if [ -n "${PREV_TAG:-}" ]; then
             COMPARE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${V}"
           else
             COMPARE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commits"
@@ -351,55 +565,103 @@ jobs:
 
           # Slack mrkdwn is not markdown: no "#" headings, "-" bullets render as
           # literal dashes, bold is one asterisk not two, and links use a
-          # different syntax. Translate the four constructs a changelog entry
-          # actually uses; anything else is left as written.
-          #   "### Foo"        -> "*Foo*"
-          #   "**bold**"       -> "*bold*"      (before the bullet rule)
-          #   "- item"         -> "• item"
-          #   "[text](url)"    -> "<url|text>"
-          BODY=""
-          if [ "$HAVE_NOTES" = "true" ] && [ -f "$RUNNER_TEMP/changelog.md" ]; then
-            BODY=$(sed -E \
+          # different syntax. Translate the constructs a release note actually
+          # uses; anything else is left as written.
+          #   "### Foo"     -> "*Foo*"
+          #   "**bold**"    -> "*bold*"     (before the bullet rule)
+          #   "- item"      -> "• item"
+          #   "[text](url)" -> "<url|text>"
+          #
+          # The unwrap pass comes first: source text is often hard-wrapped at ~80
+          # columns, and Slack treats those newlines as hard breaks, which splits
+          # sentences mid-clause. Joining continuation lines back together lets
+          # Slack do its own wrapping.
+          to_mrkdwn() {
+            awk '
+              function flush() { if (buf != "") { print buf; buf = "" } }
+              /^[[:space:]]*$/                  { flush(); print ""; next }
+              /^[[:space:]]*[-*+][[:space:]]/   { flush(); buf = $0; next }
+              /^[[:space:]]*#/                  { flush(); print; next }
+              /^[[:space:]]+[^[:space:]]/       { if (buf != "") { sub(/^[[:space:]]+/, "", $0); buf = buf " " $0; next } }
+                                                { flush(); buf = $0 }
+              END { flush() }
+            ' "$1" | sed -E \
               -e 's/\*\*([^*]+)\*\*/*\1*/g' \
               -e 's/^#{1,6}[[:space:]]+(.*)$/*\1*/' \
-              -e 's/^([[:space:]]*)[-*][[:space:]]+/\1• /' \
-              -e 's/\[([^]]+)\]\(([^)]+)\)/<\2|\1>/g' \
-              "$RUNNER_TEMP/changelog.md")
-          fi
-          if [ -z "$BODY" ]; then
-            BODY="_No changelog section for this release._"
+              -e 's/^([[:space:]]*)[-*+][[:space:]]+/\1• /' \
+              -e 's/\[([^]]+)\]\(([^)]+)\)/<\2|\1>/g'
+          }
+
+          # Slack caps a section block at 3000 chars; cut well short of it.
+          LIMIT=2600
+          truncate_body() {
+            if [ "${#1}" -gt "$LIMIT" ]; then
+              printf '%s\n…\n_Truncated — <%s|read the full notes on GitHub>._' "${1:0:$LIMIT}" "$RELEASE_URL"
+            else
+              printf '%s' "$1"
+            fi
+          }
+
+          WHAT=""
+          WHY=""
+          FALLBACK=""
+          if [ "${HAVE_SUMMARY:-false}" = "true" ]; then
+            WHAT=$(to_mrkdwn "$RUNNER_TEMP/what.md")
+            WHY=$(to_mrkdwn "$RUNNER_TEMP/why.md")
+          elif [ "${HAVE_NOTES:-false}" = "true" ] && [ -f "$RUNNER_TEMP/changelog.md" ]; then
+            # No plain-language summary available, so the technical changelog is
+            # all there is. Say so, rather than letting it read as the intended
+            # format.
+            FALLBACK=$(to_mrkdwn "$RUNNER_TEMP/changelog.md")
           fi
 
-          # Slack caps a section block at 3000 chars. Cut well short of it and
-          # point at the release for the rest.
-          LIMIT=2500
-          if [ "${#BODY}" -gt "$LIMIT" ]; then
-            BODY=$(printf '%s\n…\n_Truncated — <%s|read the full notes on GitHub>._' "${BODY:0:$LIMIT}" "$RELEASE_URL")
-          fi
-
-          HEADER=":rocket: KW Security ${V} released"
+          HEADER=":rocket: KW Security ${V}"
           if [ "$IS_DRY_RUN" = "true" ]; then
-            HEADER=":test_tube: [DRY RUN] KW Security ${V} — announcement preview"
+            HEADER=":test_tube: DRY RUN — KW Security ${V}"
           fi
 
-          FOOTER="<${RELEASE_URL}|View release>  ·  <${COMPARE_URL}|${COMMITS} commits since ${PREV_TAG:-the beginning}>"
+          FOOTER="<${RELEASE_URL}|View release>  ·  <${COMPARE_URL}|${COMMITS} changes since ${PREV_TAG:-the beginning}>"
 
-          # Built with jq --arg so the changelog text is encoded as JSON data. It
-          # is author-written but still untrusted input to the payload: a stray
-          # quote or newline would otherwise break the request body.
-          PAYLOAD=$(jq -n \
-            --arg header "$HEADER" \
-            --arg body "$BODY" \
-            --arg footer "$FOOTER" \
-            --arg fallback "$HEADER" \
-            '{
-              text: $fallback,
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: ("*" + $header + "*") } },
-                { type: "section", text: { type: "mrkdwn", text: $body } },
-                { type: "context", elements: [ { type: "mrkdwn", text: $footer } ] }
-              ]
-            }')
+          # Built with jq --arg so release prose cannot break the JSON body.
+          # A header block (plain_text) keeps the title from running into the
+          # body, and What / Why are separate section blocks so each gets its own
+          # 3000-char budget.
+          if [ -n "$WHAT" ]; then
+            PAYLOAD=$(jq -n \
+              --arg header "$HEADER" \
+              --arg what "$(truncate_body "$WHAT")" \
+              --arg why "$(truncate_body "$WHY")" \
+              --arg footer "$FOOTER" \
+              '{
+                text: $header,
+                blocks: [
+                  { type: "header", text: { type: "plain_text", text: $header, emoji: true } },
+                  { type: "divider" },
+                  { type: "section", text: { type: "mrkdwn", text: ("*What'"'"'s new*\n" + $what) } },
+                  { type: "section", text: { type: "mrkdwn", text: ("*Why it matters*\n" + $why) } },
+                  { type: "context", elements: [ { type: "mrkdwn", text: $footer } ] }
+                ]
+              }')
+          else
+            if [ -z "$FALLBACK" ]; then
+              FALLBACK="_No release notes were available for this version._"
+            else
+              FALLBACK=$(printf '_A plain-language summary was not available for this release, so the technical notes follow._\n\n%s' "$FALLBACK")
+            fi
+            PAYLOAD=$(jq -n \
+              --arg header "$HEADER" \
+              --arg body "$(truncate_body "$FALLBACK")" \
+              --arg footer "$FOOTER" \
+              '{
+                text: $header,
+                blocks: [
+                  { type: "header", text: { type: "plain_text", text: $header, emoji: true } },
+                  { type: "divider" },
+                  { type: "section", text: { type: "mrkdwn", text: $body } },
+                  { type: "context", elements: [ { type: "mrkdwn", text: $footer } ] }
+                ]
+              }')
+          fi
 
           HTTP_CODE=$(curl -sS -o /tmp/slack-response.txt -w '%{http_code}' \
             --max-time 15 \

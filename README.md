@@ -49,7 +49,7 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
 | Maintenance API | ON | Read-only REST endpoint (`/wp-json/kw-security/v1/site-status`) used by the Kilowott maintenance agent; gated by `Authorization: Bearer <key>`, rate-limited to 20 req/hour |
 | Activity Log | ON | Records security-relevant events (logins, failed logins, plugin/theme/core changes, post edits, media uploads, settings saves) to a database log viewable at Settings → Activity Log; 90-day retention with daily cleanup |
-| Slack Security Alerts | ON | Forwards **critical security events** (brute-force lockouts, admin privilege changes, blocked malicious uploads, file-integrity anomalies, disabled defenses) to a Slack channel via an Incoming Webhook. Per-site, queued and flushed on shutdown, de-duplicated. Inert until a webhook URL is set — via Settings → KW Security or the `KW_SLACK_WEBHOOK_URL` constant/environment variable. Choose which categories to send per site |
+| Slack Security Alerts | ON | Forwards **critical security events** (brute-force lockouts, admin privilege changes, blocked malicious uploads, file-integrity anomalies, disabled defenses) to a Slack channel via an Incoming Webhook. Also reports **updates available for KW Security or Wordfence** — with the release notes, so the team can see what the update contains — and **activation/deactivation of either plugin**. Per-site, queued and flushed on shutdown, de-duplicated. Inert until a webhook URL is set — via Settings → KW Security or the `KW_SLACK_WEBHOOK_URL` constant/environment variable. Choose which categories to send per site |
 
 > **About "Hide Login URL":** Disabled by default because changing the login URL is a disruptive change that requires bookmarking a custom URL. Enable only when ready, and configure the slug in the same Settings → KW Security page before saving.
 
@@ -245,6 +245,7 @@ Actions → **Release** → *Run workflow*, with:
 | `version` | Override the auto-computed `YY.MM.NN`. Leave blank normally. |
 | `dry_run` | Lint, extract notes, and build the zip without pushing, tagging, releasing, or announcing. Use this first when in doubt. |
 | `skip_changelog_check` | Release without a `CHANGELOG.md` section. Emergencies only — the release body falls back to auto-generated commit notes. |
+| `release_context` | A paragraph of business context for this release — what prompted it, what it unblocks. This is the main input the summary can't work out from the code, and it's what makes the "Why it matters" section useful. |
 | `slack_webhook_override` | Post the announcement to a different channel for this run. Also enables the announcement during a dry run, which is how you test the message without publishing. |
 
 The workflow pushes the version bump commit to `main` itself, so there is no manual
@@ -263,6 +264,43 @@ seconds.
 
 > **Note:** Without `?force-check=1`, WordPress checks for updates every 12 hours.
 > The force-check bypasses the cache immediately.
+
+### What the announcement looks like
+
+The release body and the Slack message both lead with two plain-language sections
+written for non-technical readers:
+
+- **What's new** — what is actually different, in terms someone can see or click.
+- **Why it matters** — a descriptive explanation of the problem the release solves.
+
+These are generated from the technical `CHANGELOG.md` section, the `release_context`
+paragraph, and the change subjects since the last release. The GitHub release body keeps
+the technical changelog underneath, in a collapsed **Technical detail** block.
+
+The generated text is written to the workflow run summary on every release, so there is
+always a record of exactly what was posted. To see it before it goes out, do a dry run
+with `slack_webhook_override` pointed at a test channel.
+
+**To change how it's written, edit [`.github/release-summary-prompt.md`](.github/release-summary-prompt.md)** —
+tone, length, what to emphasise, what to avoid. No workflow change needed.
+
+If the summary can't be generated — no API key, a rate limit, an unusable reply — the
+release still succeeds. The announcement falls back to the technical changelog text,
+labelled as such, and the run logs a warning.
+
+### Configuring the summary
+
+| Setting | Type | Purpose |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | secret | Enables the plain-language summary. Without it the step is skipped. |
+| `GEMINI_MODEL` | variable | Model to use. Defaults to `gemini-3.7-flash`. |
+| `GEMINI_API_URL` | variable | API base URL. Defaults to Google's `v1beta` models endpoint. |
+
+Model and endpoint are variables rather than hard-coded so that a Google API change is a
+settings change, not a code change.
+
+Note that the changelog text and change subjects are sent to Google to produce the
+summary. This repository is public, so nothing confidential leaves the project.
 
 ### Configuring the Slack announcement channel
 

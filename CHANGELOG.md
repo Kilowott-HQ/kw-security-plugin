@@ -34,6 +34,49 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.05
+
+### Problem
+- The first Slack release announcement read like developer notes: it explained
+  auto-generated release notes, Releases API readability, and workflow inputs,
+  none of which mean anything to the non-technical half of the team. Its bullets
+  also broke mid-sentence, because the source changelog is hard-wrapped at 80
+  columns and Slack treats those newlines as hard breaks.
+- Nothing told the team that a client site had an update waiting for KW Security
+  or Wordfence. Sites sat on old versions until somebody happened to open that
+  site's dashboard, so a security patch could go unapplied for weeks.
+- Nothing told the team when either security plugin was switched on or off. A
+  site could lose its protection entirely — by mistake during other work, or
+  deliberately — and nothing announced it.
+
+### Changed
+- Release announcements are now two plain-language sections, "What's new" and
+  "Why it matters", generated from the technical changelog plus a business-context
+  paragraph supplied at release time. The GitHub release body leads with the same
+  two sections and keeps the technical changelog in a collapsed block underneath.
+- The announcement now uses a proper Slack header block, and hard-wrapped text is
+  unwrapped before sending so Slack reflows it instead of breaking sentences.
+- Wordfence and KW Security are excluded from the existing
+  `plugin_update_critical` category, so a Wordfence security release produces one
+  alert rather than two. Every other plugin is unaffected.
+- The `wordfence_deactivated` category now covers KW Security as well and is
+  relabelled accordingly. The option key is unchanged, so no site loses its saved
+  preference.
+
+### New
+- `watched_plugin_update` alert category: fires on any available update to KW
+  Security or Wordfence, whatever the size of the version jump, carrying an
+  excerpt of the release notes. KW Security's notes come from its GitHub release
+  body; Wordfence's from the wordpress.org changelog, narrowed to the entry for
+  the new version. Cached for 12 hours per version.
+- `security_plugin_activated` alert category, and deactivation alerts extended to
+  KW Security. Both default on.
+- The summary prompt lives in `.github/release-summary-prompt.md` so tone and
+  emphasis can be tuned without touching the release workflow.
+- Configurable via a `GEMINI_API_KEY` secret plus optional `GEMINI_MODEL` and
+  `GEMINI_API_URL` variables. Without the key the release still succeeds and the
+  announcement falls back to the changelog text, labelled as such.
+
 ## 26.08.04
 
 ### Problem

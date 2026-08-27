@@ -39,6 +39,10 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         const OPTION_MENTION    = 'kw_slack_mention';
         const OPTION_FM_BASELINE = 'kw_slack_fm_baseline_done'; // one-time file-manager sweep flag.
         const OPTION_WF_CRITICAL_ONLY = 'kw_slack_wordfence_critical_only'; // relay only critical WF emails.
+        // Per-version de-dupe for watched-plugin updates. Deliberately NOT the
+        // same option as kw_slack_alerted_updates (plugin_update_critical): the
+        // two producers would otherwise suppress each other's alerts.
+        const OPTION_WATCHED_UPDATES  = 'kw_slack_alerted_watched_updates';
         const CONST_WEBHOOK     = 'KW_SLACK_WEBHOOK_URL';
         const ENV_WEBHOOK       = 'KW_SLACK_WEBHOOK_URL';
         const CONST_MENTION     = 'KW_SLACK_MENTION';
@@ -135,8 +139,13 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 'file_changed'       => __( 'File integrity anomaly (unknown or modified core file)', 'kw-security' ),
                 // ── Configuration / plugins / malware ───────────────────
                 'security_disabled'  => __( 'A KW Security defense was switched off', 'kw-security' ),
-                'wordfence_deactivated' => __( 'Wordfence plugin deactivated', 'kw-security' ),
-                'plugin_update_critical' => __( 'Plugin update available — security patch or major version', 'kw-security' ),
+                // Key kept as-is for backward compatibility: it predates KW
+                // Security being watched too, and renaming it would silently
+                // reset the saved preference on every existing site.
+                'wordfence_deactivated' => __( 'Security plugin deactivated (Wordfence or KW Security)', 'kw-security' ),
+                'security_plugin_activated' => __( 'Security plugin activated (Wordfence or KW Security)', 'kw-security' ),
+                'watched_plugin_update' => __( 'Update available for KW Security or Wordfence (any version, with release notes)', 'kw-security' ),
+                'plugin_update_critical' => __( 'Plugin update available — security patch or major version (any other plugin)', 'kw-security' ),
                 'file_manager_active' => __( 'File-manager plugin active (direct file CRUD — high risk)', 'kw-security' ),
                 'wordfence_alert'    => __( 'Relay Wordfence alerts (mirrors Wordfence email alerts to Slack)', 'kw-security' ),
                 'malware'            => __( 'Malware detected', 'kw-security' ),
@@ -176,6 +185,8 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 __( 'Configuration / plugins / malware', 'kw-security' ) => array(
                     'security_disabled',
                     'wordfence_deactivated',
+                    'security_plugin_activated',
+                    'watched_plugin_update',
                     'plugin_update_critical',
                     'file_manager_active',
                     'wordfence_alert',
@@ -879,35 +890,89 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
+         * Security plugins whose state and updates are reported to Slack:
+         * Wordfence and KW Security itself. One list drives three alerts —
+         * activation, deactivation, and update-available — so adding a plugin
+         * here (via the filter) covers all three at once.
+         *
+         * @return array<int,string> Plugin files, e.g. 'wordfence/wordfence.php'.
+         */
+        private function watched_plugins() {
+            return (array) apply_filters( 'kw_slack_alert_watch_plugins', array(
+                'wordfence/wordfence.php',
+                'kw-security/kw-security.php',
+            ) );
+        }
+
+        /**
+         * Display name for a watched plugin, falling back to its directory so a
+         * non-standard install path still reads sensibly in Slack.
+         *
+         * @param string $plugin Plugin file.
+         * @return string
+         */
+        private function watched_plugin_label( $plugin ) {
+            if ( 'kw-security/kw-security.php' === $plugin ) {
+                return 'KW Security';
+            }
+            if ( 'wordfence/wordfence.php' === $plugin ) {
+                return 'Wordfence';
+            }
+            return ( '.' !== dirname( $plugin ) ) ? dirname( $plugin ) : $plugin;
+        }
+
+        /**
          * A plugin was deactivated. Alerts only for watched security plugins
-         * (Wordfence by default; extend via the filter).
+         * (Wordfence and KW Security by default; extend via the filter).
+         *
+         * KW Security can report its own deactivation because this class is
+         * instantiated when the plugin file is included, which happens before
+         * deactivate_plugins() fires this hook — and the queued alert still
+         * flushes on 'shutdown' for that same request.
          *
          * @param string $plugin Plugin file, e.g. 'wordfence/wordfence.php'.
          */
         public function on_plugin_deactivated( $plugin ) {
-            $watch = apply_filters( 'kw_slack_alert_watch_plugins', array( 'wordfence/wordfence.php' ) );
-            if ( ! in_array( $plugin, (array) $watch, true ) ) {
+            if ( ! in_array( $plugin, $this->watched_plugins(), true ) ) {
                 return;
             }
+            $name = $this->watched_plugin_label( $plugin );
             $this->notify(
                 'wordfence_deactivated',
-                sprintf( 'Security plugin deactivated: %s', $plugin ),
+                sprintf( 'Security plugin deactivated: %s', $name ),
                 array(
                     'Plugin'         => $plugin,
                     'Deactivated by' => $this->current_user_label(),
                     'IP'             => $this->client_ip(),
+                    'Impact'         => sprintf( '%s is no longer protecting this site.', $name ),
                 )
             );
         }
 
         /**
-         * A plugin was just activated. Alert if it is a known file manager —
-         * these expose direct create/read/update/delete access to the
-         * filesystem and are a frequent post-compromise backdoor.
+         * A plugin was just activated. Two independent checks, either of which
+         * may fire:
+         *   - a watched security plugin came back on (Wordfence / KW Security),
+         *   - a known file manager was switched on, which exposes direct
+         *     create/read/update/delete access to the filesystem and is a
+         *     frequent post-compromise backdoor.
          *
          * @param string $plugin Plugin file, e.g. 'wp-file-manager/file_folder_manager.php'.
          */
         public function on_plugin_activated( $plugin ) {
+            if ( in_array( $plugin, $this->watched_plugins(), true ) ) {
+                $name = $this->watched_plugin_label( $plugin );
+                $this->notify(
+                    'security_plugin_activated',
+                    sprintf( 'Security plugin activated: %s', $name ),
+                    array(
+                        'Plugin'       => $plugin,
+                        'Activated by' => $this->current_user_label(),
+                        'IP'           => $this->client_ip(),
+                    )
+                );
+            }
+
             $name = $this->matched_file_manager( $plugin );
             if ( null === $name ) {
                 return;
@@ -1065,21 +1130,44 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
-         * Inspect the plugin-update transient and alert on plugins whose
-         * available update is a security patch or a major-version jump.
-         * A persistent set (kw_slack_alerted_updates) keyed by file@version
-         * prevents re-alerting the same standing update on every refresh.
+         * Inspect the plugin-update transient and alert on available updates.
+         * Two independent producers share this one hook:
+         *
+         *   watched_plugin_update  — KW Security or Wordfence, ANY version
+         *                            delta, carrying the release notes so the
+         *                            team can see what the update contains.
+         *   plugin_update_critical — every OTHER plugin, but only when the
+         *                            update is a security patch or a major
+         *                            version jump.
+         *
+         * Watched plugins are excluded from the critical branch so a Wordfence
+         * security release produces one alert, not two. Each branch keeps its
+         * own persistent per-version set (keyed file@version) so a standing
+         * update isn't re-alerted on every refresh; sharing one set would let
+         * either branch suppress the other.
          *
          * @param object $transient The update_plugins site transient.
          */
         public function on_plugins_update_check( $transient ) {
-            if ( $this->from_wordfence( 'plugin_update_critical' ) ) {
-                return; // Relayed from Wordfence scan emails instead.
-            }
-            if ( ! self::is_category_enabled( 'plugin_update_critical' ) || ! self::get_webhook_url() ) {
+            if ( ! self::get_webhook_url() ) {
                 return;
             }
             if ( ! is_object( $transient ) || empty( $transient->response ) || ! is_array( $transient->response ) ) {
+                return;
+            }
+
+            $this->check_watched_plugin_updates( $transient );
+
+            // plugin_update_critical is Wordfence-sourced: when Wordfence is
+            // active it relays vulnerable/outdated findings by email instead, so
+            // native detection stands down to avoid double-alerting. This must
+            // stay AFTER the watched-plugin check above — that category is never
+            // Wordfence-sourced, because Wordfence will never email about an
+            // update to KW Security itself.
+            if ( $this->from_wordfence( 'plugin_update_critical' ) ) {
+                return;
+            }
+            if ( ! self::is_category_enabled( 'plugin_update_critical' ) ) {
                 return;
             }
 
@@ -1093,8 +1181,14 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             $to_send    = array();
             $changed    = false;
 
+            $watched = $this->watched_plugins();
+
             foreach ( $transient->response as $file => $update ) {
                 if ( empty( $update->new_version ) ) {
+                    continue;
+                }
+                // Covered by watched_plugin_update above, in more detail.
+                if ( in_array( $file, $watched, true ) ) {
                     continue;
                 }
                 $new_ver = (string) $update->new_version;
@@ -1144,6 +1238,272 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                     )
                 );
             }
+        }
+
+        /**
+         * Alert on any available update to a watched security plugin (KW
+         * Security or Wordfence), whatever the size of the version jump, with
+         * an excerpt of the release notes so the team can see what the update
+         * actually contains rather than just that a number changed.
+         *
+         * Deliberately NOT gated on from_wordfence(): Wordfence relays findings
+         * about OTHER plugins, never about an update to KW Security itself, so
+         * standing down here would silence the main case this exists for.
+         *
+         * @param object $transient The update_plugins site transient.
+         */
+        private function check_watched_plugin_updates( $transient ) {
+            if ( ! self::is_category_enabled( 'watched_plugin_update' ) ) {
+                return;
+            }
+
+            $watched = $this->watched_plugins();
+            $checked = ( isset( $transient->checked ) && is_array( $transient->checked ) ) ? $transient->checked : array();
+
+            $alerted = get_option( self::OPTION_WATCHED_UPDATES, array() );
+            if ( ! is_array( $alerted ) ) {
+                $alerted = array();
+            }
+
+            $relevant = array();
+            $to_send  = array();
+            $changed  = false;
+
+            foreach ( $transient->response as $file => $update ) {
+                if ( ! in_array( $file, $watched, true ) || empty( $update->new_version ) ) {
+                    continue;
+                }
+                $new_ver = (string) $update->new_version;
+                $cur_ver = isset( $checked[ $file ] ) ? (string) $checked[ $file ] : '';
+
+                // Nothing to say when the "update" is the installed version.
+                if ( '' !== $cur_ver && version_compare( $cur_ver, $new_ver, '>=' ) ) {
+                    continue;
+                }
+
+                $key              = $file . '@' . $new_ver;
+                $relevant[ $key ] = true;
+                if ( isset( $alerted[ $key ] ) ) {
+                    continue;
+                }
+
+                $to_send[] = array( 'file' => $file, 'cur' => $cur_ver, 'new' => $new_ver );
+                $alerted[ $key ] = time();
+                $changed         = true;
+            }
+
+            // Drop entries no longer offered (plugin updated or removed), so a
+            // future re-release of the same version can alert again.
+            foreach ( array_keys( $alerted ) as $k ) {
+                if ( ! isset( $relevant[ $k ] ) ) {
+                    unset( $alerted[ $k ] );
+                    $changed = true;
+                }
+            }
+            if ( $changed ) {
+                update_option( self::OPTION_WATCHED_UPDATES, $alerted, false );
+            }
+
+            foreach ( $to_send as $a ) {
+                $name = $this->watched_plugin_label( $a['file'] );
+                $this->notify(
+                    'watched_plugin_update',
+                    sprintf(
+                        'Update available: %s %s → %s',
+                        $name,
+                        '' !== $a['cur'] ? $a['cur'] : '?',
+                        $a['new']
+                    ),
+                    array_merge(
+                        array(
+                            'Plugin'    => $name,
+                            'Installed' => '' !== $a['cur'] ? $a['cur'] : 'unknown',
+                            'Available' => $a['new'],
+                        ),
+                        $this->fetch_release_notes( $a['file'], $a['new'] )
+                    )
+                );
+            }
+        }
+
+        /**
+         * Release notes for a watched plugin's new version, as Slack context
+         * lines (label => text). Returns the two plain-language sections
+         * separately where the source has them, so the alert reads as "What's
+         * new" and "Why it matters" rather than one undifferentiated blob.
+         *
+         * Cached per file+version for 12 hours: the update transient refreshes
+         * roughly twice a day and this must not re-fetch on every refresh.
+         *
+         * Never fatal — a failed lookup degrades to a short note rather than
+         * dropping an update the team needs to know about.
+         *
+         * @param string $file    Plugin file.
+         * @param string $version New version.
+         * @return array<string,string>
+         */
+        private function fetch_release_notes( $file, $version ) {
+            $cache_key = 'kw_slack_notes_' . md5( $file . '@' . $version );
+            $cached    = get_transient( $cache_key );
+            if ( is_array( $cached ) ) {
+                return $cached;
+            }
+
+            if ( 'kw-security/kw-security.php' === $file ) {
+                $sections = $this->fetch_github_release_notes( $version );
+            } else {
+                $sections = array( "What's new" => $this->fetch_wporg_changelog( $file, $version ) );
+            }
+
+            $sections = array_filter( array_map( function ( $text ) {
+                return self::truncate( trim( (string) $text ), 700 );
+            }, $sections ) );
+
+            if ( ! $sections ) {
+                $sections = array( "What's new" => 'Release notes unavailable — see the plugin page for details.' );
+            }
+
+            set_transient( $cache_key, $sections, 12 * HOUR_IN_SECONDS );
+            return $sections;
+        }
+
+        /**
+         * KW Security's own release notes, from the GitHub Releases API for the
+         * matching tag. The repository is public, so this needs no credentials.
+         *
+         * The release body leads with the plain-language "What's new" / "Why it
+         * matters" sections and keeps the technical changelog in a collapsed
+         * <details> block underneath; everything from that marker on is cut,
+         * since the audience for this alert is the same non-technical audience
+         * the summary was written for.
+         *
+         * @param string $version
+         * @return array<string,string>
+         */
+        private function fetch_github_release_notes( $version ) {
+            $url = apply_filters(
+                'kw_slack_release_notes_url',
+                'https://api.github.com/repos/Kilowott-HQ/kw-security-plugin/releases/tags/' . rawurlencode( $version ),
+                $version
+            );
+
+            $response = wp_remote_get( $url, array(
+                'timeout' => 5,
+                'headers' => array(
+                    'Accept'     => 'application/vnd.github+json',
+                    'User-Agent' => 'kw-security/' . KW_SECURITY_VERSION,
+                ),
+            ) );
+
+            if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+                return array();
+            }
+
+            $data = json_decode( wp_remote_retrieve_body( $response ), true );
+            if ( ! is_array( $data ) || empty( $data['body'] ) ) {
+                return array();
+            }
+
+            $body = (string) $data['body'];
+
+            // Cut the collapsed technical block and the footer.
+            foreach ( array( '<details', "\n---" ) as $marker ) {
+                $pos = strpos( $body, $marker );
+                if ( false !== $pos ) {
+                    $body = substr( $body, 0, $pos );
+                }
+            }
+
+            // Split on the release body's own two headings, so each becomes its
+            // own labelled line instead of the heading text surviving as prose
+            // ("What's new: What's new ...").
+            $sections = array();
+            if ( preg_match( "/^#{1,6}\\s*What's new\\s*$(.*?)(?=^#{1,6}\\s|\\z)/ims", $body, $m ) ) {
+                $sections["What's new"] = $this->tidy_notes( $m[1] );
+            }
+            if ( preg_match( "/^#{1,6}\\s*Why it matters\\s*$(.*?)(?=^#{1,6}\\s|\\z)/ims", $body, $m ) ) {
+                $sections['Why it matters'] = $this->tidy_notes( $m[1] );
+            }
+
+            // Older releases (and the fallback body) have no such headings —
+            // send the whole thing under one label rather than nothing.
+            if ( ! $sections ) {
+                $sections["What's new"] = $this->tidy_notes( $body );
+            }
+
+            return $sections;
+        }
+
+        /**
+         * Changelog entry for a wordpress.org-hosted plugin (Wordfence), read
+         * from the plugin-information API and narrowed to the section for the
+         * new version where one can be identified.
+         *
+         * plugins_api() lives in an admin-only include, and this runs on the
+         * update-check path — which fires on cron and front-end requests too,
+         * where that file is not loaded. Hence the explicit require_once.
+         *
+         * @param string $file    Plugin file.
+         * @param string $version New version.
+         * @return string
+         */
+        private function fetch_wporg_changelog( $file, $version ) {
+            if ( ! function_exists( 'plugins_api' ) ) {
+                $include = ABSPATH . 'wp-admin/includes/plugin-install.php';
+                if ( ! is_readable( $include ) ) {
+                    return '';
+                }
+                require_once $include;
+            }
+            if ( ! function_exists( 'plugins_api' ) ) {
+                return '';
+            }
+
+            $slug = ( '.' !== dirname( $file ) ) ? dirname( $file ) : $file;
+            $info = plugins_api( 'plugin_information', array(
+                'slug'   => $slug,
+                'fields' => array( 'sections' => true, 'short_description' => false ),
+            ) );
+
+            if ( is_wp_error( $info ) || ! isset( $info->sections['changelog'] ) ) {
+                return '';
+            }
+
+            $changelog = (string) $info->sections['changelog'];
+
+            // Narrow to the heading for this version, up to the next heading, so
+            // the alert shows what THIS update contains and not the whole file.
+            if ( preg_match(
+                '/<h\d[^>]*>[^<]*' . preg_quote( $version, '/' ) . '.*?<\/h\d>(.*?)(?=<h\d|$)/is',
+                $changelog,
+                $m
+            ) ) {
+                $changelog = $m[1];
+            }
+
+            return $this->tidy_notes( $changelog );
+        }
+
+        /**
+         * Normalize release-note markup into the plain bulleted text the Slack
+         * payload expects: list items become bullets, tags are stripped, and
+         * runs of blank lines collapse.
+         *
+         * @param string $text
+         * @return string
+         */
+        private function tidy_notes( $text ) {
+            $text = preg_replace( '/<li[^>]*>/i', "\n• ", (string) $text );
+            $text = preg_replace( '/<\/(p|div|h\d|ul|ol)>/i', "\n", $text );
+            $text = wp_strip_all_tags( $text );
+            $text = html_entity_decode( $text, ENT_QUOTES, 'UTF-8' );
+            // Markdown headings and bullets read fine as-is, but normalize the
+            // bullet marker so GitHub and wordpress.org notes look the same.
+            $text = preg_replace( '/^[ \t]*[-*][ \t]+/m', '• ', $text );
+            $text = preg_replace( '/^[ \t]*#{1,6}[ \t]*/m', '', $text );
+            $text = preg_replace( '/[ \t]+/', ' ', $text );
+            $text = preg_replace( '/\n{3,}/', "\n\n", $text );
+            return trim( $text );
         }
 
         /**
