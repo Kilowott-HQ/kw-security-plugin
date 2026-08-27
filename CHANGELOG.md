@@ -15,9 +15,15 @@ Every entry uses this shape:
 ```markdown
 ## YY.MM.NN
 
-### Problem
-- What was wrong, or what the team could not do before. Use `- n/a` for a pure
-  feature release with no preceding defect.
+### What's new
+- What is actually different now, in terms a non-developer can see or act on.
+  Short bullets. If a change shows up in the WordPress admin or as a Slack
+  message, say where.
+
+### Why it matters
+Two or three plain-English paragraphs on the problem this release solves and why
+it matters for the client sites and the team — what the risk, the manual work, or
+the blind spot was before. Prose, not bullets.
 
 ### Changed
 - What changed in behaviour, and anything an operator needs to know or do.
@@ -26,8 +32,20 @@ Every entry uses this shape:
 - New capabilities. Omit the section if there are none.
 ```
 
-At least one of the three subsections must have content. Keep the bullets short —
-they are read in Slack, not just on GitHub.
+**What's new** and **Why it matters** are what the team reads: they lead the GitHub
+release body and are the whole of the Slack announcement. Write them for account
+managers and support staff, not developers — no file names, class names, hook names,
+or git vocabulary.
+
+**Changed** and **New** are the technical record. They sit under a collapsed
+*Technical detail* toggle on the release and never reach Slack.
+
+Nothing here is generated. What the channel reads is exactly what you write, so it is
+worth the five minutes. If the first two sections are missing the release still
+succeeds — the announcement falls back to the technical text, labelled as such.
+
+At least one subsection must have content. Keep bullets short: they are read in Slack,
+not just on GitHub.
 
 Versions are `YY.MM.NN`. The workflow computes the next `NN` for the current month
 automatically, so add the heading for the version you are about to release.
@@ -36,33 +54,45 @@ automatically, so add the heading for the version you are about to release.
 
 ## 26.08.06
 
-### Problem
-- A release summary had one provider behind it and no retries: a single HTTP
-  response was the whole attempt. Gemini answered `503 high demand` on the
-  26.08.05 dry run — a transient spike that clears in seconds — and the
-  announcement dropped straight to raw changelog text.
-- The collapsed "Technical detail" block on a release repeated the whole
-  changelog section, so "Problem" said in developer voice what "Why it matters"
-  had just said in plain English two lines above it.
+### What's new
+- Release announcements in Slack now tag the whole channel, so a release lands as a
+  notification rather than something you have to be scrolling to catch.
+- The "What's new" and "Why it matters" you are reading are now written by hand in the
+  changelog, not produced by an AI service. What the channel reads is exactly what
+  somebody wrote and a reviewer approved.
+- The collapsed "Technical detail" section on a release now carries only the technical
+  record, instead of repeating the plain-language explanation in developer language.
+
+### Why it matters
+Release notes were being written by an external AI service, and that turned out to be
+both unreliable and wordy. On the previous release the service answered "currently
+experiencing high demand" and the announcement fell back to raw developer notes — the
+exact unreadable output the plain-language sections existed to replace. A release
+announcement that only works when somebody else's free service is having a good day is
+not something the team can rely on.
+
+Writing the two sections by hand costs a few minutes per release and removes the
+dependency entirely. It also removes a subtler problem: generated text was verbose and
+nobody had approved the specific words that went out to the channel. Now the
+announcement is reviewed in the pull request alongside the code it describes, and reads
+the way the person who did the work would explain it.
+
+The sections live in the changelog rather than in a box on the release screen because
+that box is a single line — bullets and paragraphs cannot survive it. In the changelog
+they are written in a normal editor and kept with the work they describe.
 
 ### Changed
-- The summary now tries two providers in order, Groq first and Gemini second,
-  each retried three times (about 2s, 6s, then 18s apart) on a rate limit, a
-  timeout, or a 5xx. A bad key or an unknown model is not retried and hands over
-  to the next provider immediately, as does a reply that comes back missing the
-  What or the Why section. Only when both providers are exhausted does the
-  release fall back to the changelog text.
-- Either `GROQ_API_KEY` or `GEMINI_API_KEY` on its own is enough to produce a
-  summary. Both free tiers; with neither key the release still succeeds.
-- The run summary and the release log now name which provider and model actually
-  wrote the text that went out.
-- The collapsed "Technical detail" block carries `### Changed` and `### New`
-  only. `### Problem` still appears when no plain-language summary was produced,
-  where it is the only thing explaining why the release exists.
-
-### New
-- `GROQ_API_KEY` secret plus optional `GROQ_MODEL` and `GROQ_API_URL` variables,
-  defaulting to `openai/gpt-oss-120b` on Groq's OpenAI-compatible endpoint.
+- The plain-language sections are read from `### What's new` and `### Why it matters` in
+  the CHANGELOG.md entry for the version. The Groq/Gemini summary step, the
+  `release_context` workflow input, and `.github/release-summary-prompt.md` are gone,
+  along with the `GROQ_API_KEY` and `GEMINI_API_KEY` secrets they needed.
+- An entry missing those two sections logs a warning and falls back to the technical
+  text, labelled as such. The release still publishes.
+- The Slack announcement tags `@channel`. The mention sits in its own section block
+  rather than the header, because a Slack header is plain text and would print the
+  mention as literal characters instead of notifying anyone.
+- The collapsed "Technical detail" block carries `### Changed` and `### New` only.
+  `### Problem` is retired from the format — "Why it matters" now covers it.
 
 ## 26.08.05
 

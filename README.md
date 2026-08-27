@@ -225,7 +225,10 @@ announces it in Slack. There is nothing to build or upload by hand.
 
 Add a section for the version you are about to release to
 [`CHANGELOG.md`](CHANGELOG.md), following the format documented at the top of that
-file (`### Problem` / `### Changed` / `### New`).
+file (`### What's new` / `### Why it matters` / `### Changed` / `### New`).
+
+The first two are the plain-language sections the team reads in Slack; the last two are
+the technical record, collapsed under a **Technical detail** toggle on the release.
 
 **This is required.** The workflow uses that section as the GitHub release body and
 the Slack announcement, and fails the release if it is missing — before anything is
@@ -246,7 +249,6 @@ Actions → **Release** → *Run workflow*, with:
 | `dry_run` | Lint, extract notes, and build the zip without pushing, tagging, releasing, or announcing. Use this first when in doubt. |
 | `skip_changelog_check` | Release without a `CHANGELOG.md` section. Emergencies only — the release body falls back to auto-generated commit notes. |
 | `skip_announcement` | Don't post to Slack. For small fixes that don't warrant a channel update. The release still publishes with full notes; only the channel post is suppressed. |
-| `release_context` | A paragraph of business context for this release — what prompted it, what it unblocks. This is the main input the summary can't work out from the code, and it's what makes the "Why it matters" section useful. |
 | `slack_webhook_override` | Post the announcement to a different channel for this run. Also enables the announcement during a dry run, which is how you test the message without publishing. |
 
 The workflow pushes the version bump commit to `main` itself, so there is no manual
@@ -274,20 +276,27 @@ written for non-technical readers:
 - **What's new** — what is actually different, in terms someone can see or click.
 - **Why it matters** — a descriptive explanation of the problem the release solves.
 
-These are generated from the technical `CHANGELOG.md` section, the `release_context`
-paragraph, and the change subjects since the last release. The GitHub release body keeps
-the technical changelog underneath, in a collapsed **Technical detail** block — `###
-Changed` and `### New` only. `### Problem` is left out of that block, because **Why it
-matters** directly above it already covers the same ground for the same reader. It still
-appears when there is no summary at all, where it is the only thing explaining why the
-release exists.
+**You write both sections by hand**, as `### What's new` and `### Why it matters` in the
+`CHANGELOG.md` entry for the version. Nothing is generated: what the channel reads is
+exactly what somebody wrote and a reviewer approved in the pull request.
 
-The generated text is written to the workflow run summary on every release, so there is
-always a record of exactly what was posted. To see it before it goes out, do a dry run
-with `slack_webhook_override` pointed at a test channel.
+They live in the changelog rather than in a *Run workflow* input box because
+`workflow_dispatch` inputs are single-line text fields — GitHub has no multiline input
+type — so bullets and paragraphs cannot survive one. In the changelog you get a normal
+editor, real bullets, and version history.
 
-**To change how it's written, edit [`.github/release-summary-prompt.md`](.github/release-summary-prompt.md)** —
-tone, length, what to emphasise, what to avoid. No workflow change needed.
+The GitHub release body keeps the technical changelog underneath, in a collapsed
+**Technical detail** block — `### Changed` and `### New` only. What's new and Why it
+matters are dropped from it because they are rendered directly above, and `### Problem`
+because Why it matters now says the same thing in the voice that block's readers are not
+here for.
+
+If the entry has no What's new / Why it matters, the release still succeeds: the
+announcement falls back to the technical text, labelled as such, and the run logs a
+warning.
+
+The Slack post tags `@channel`, so the whole channel is notified. To see the message
+before it goes out, do a dry run with `slack_webhook_override` pointed at a test channel.
 
 For a small fix that doesn't warrant a channel update, tick **`skip_announcement`**. The
 release still publishes with its full notes — only the Slack post is suppressed, and the
@@ -298,37 +307,6 @@ run log says so.
 > becomes available (see the **Update available for KW Security or Wordfence** alert
 > category). A quiet release is not an invisible one; to silence that too, turn the
 > category off per site under **Settings → KW Security**.
-
-If the summary can't be generated — no API key, a rate limit, an unusable reply — the
-release still succeeds. The announcement falls back to the technical changelog text,
-labelled as such, and the run logs a warning.
-
-### Configuring the summary
-
-Two providers are tried in order, each on its own free tier. Groq answers first; Gemini
-covers Groq being down. A single provider is a single point of failure — one busy
-afternoon on the model host is enough to drop a release to raw changelog text.
-
-| Setting | Type | Purpose |
-| --- | --- | --- |
-| `GROQ_API_KEY` | secret | Primary provider. Free tier, no card required — get one at [console.groq.com](https://console.groq.com/keys). |
-| `GROQ_MODEL` | variable | Model to use. Defaults to `openai/gpt-oss-120b`. |
-| `GROQ_API_URL` | variable | Full endpoint URL. Defaults to Groq's OpenAI-compatible chat-completions endpoint. |
-| `GEMINI_API_KEY` | secret | Fallback provider. Free tier at [aistudio.google.com](https://aistudio.google.com/apikey). |
-| `GEMINI_MODEL` | variable | Model to use. Defaults to `gemini-3.7-flash`. |
-| `GEMINI_API_URL` | variable | API base URL. Defaults to Google's `v1beta` models endpoint. |
-
-Either key on its own is enough; with neither, the step is skipped. Each provider is
-retried three times (roughly 2s, 6s, then 18s apart) on a rate limit, a timeout, or a 5xx
-— the transient `503 high demand` that used to lose a summary now costs a few seconds
-instead. A bad key or an unknown model name is not retried; it hands straight over to the
-next provider, as does a reply that comes back missing one of the two sections.
-
-Models and endpoints are variables rather than hard-coded so that a provider-side change
-is a settings change, not a code change.
-
-Note that the changelog text and change subjects are sent to whichever provider answers.
-This repository is public, so nothing confidential leaves the project.
 
 ### Configuring the Slack announcement channel
 
