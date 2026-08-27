@@ -156,6 +156,26 @@ jobs:
           fi
           echo "commits=${COMMITS}" >> "$GITHUB_OUTPUT"
 
+          # Sections for versions newer than the newest tag were written for a
+          # release that never happened — an abandoned attempt, or a dry run
+          # somebody wrote notes for first. They are invisible: the workflow only
+          # ever publishes the one section matching the version being released,
+          # so that work reaches no release body and no channel. Warn loudly
+          # rather than fail: the release being run is still valid.
+          STALE=$(grep -oE '^## [0-9]{2}\.[0-9]{2}\.[0-9]{2}$' CHANGELOG.md 2>/dev/null | awk '{print $2}' | while read -r ver; do
+            [ "$ver" = "$V" ] && continue
+            [ -z "${PREV_TAG:-}" ] && continue
+            [ "$ver" = "$PREV_TAG" ] && continue
+            # Newer than the newest tag => never released.
+            if [ "$(printf '%s\n%s\n' "$ver" "$PREV_TAG" | sort -V | tail -n1)" = "$ver" ]; then
+              echo "$ver"
+            fi
+          done | paste -sd', ' -)
+
+          if [ -n "$STALE" ]; then
+            echo "::warning::CHANGELOG.md has sections for ${STALE}, newer than the latest tag (${PREV_TAG}) and not the version being released (${V}). Nothing in those sections will reach a release body or Slack. Fold them into the ${V} section, or release those versions first."
+          fi
+
           CHANGELOG="$RUNNER_TEMP/changelog.md"
 
           # Pull the block between "## <version>" and the next "## " heading.
