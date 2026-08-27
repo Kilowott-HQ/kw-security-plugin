@@ -8,11 +8,11 @@ name: Release
 #   3. Bumps Version: header + KW_SECURITY_VERSION constant in kw-security.php
 #   4. Commits the bump back to main (with [skip ci] so this doesn't loop)
 #   5. Builds kw-security.zip with root folder "kw-security" (required by PUC)
-#   6. Rewrites the technical changelog into a plain-language WHAT / WHY, via
-#      Groq with Gemini as a fallback (best-effort; falls back to the changelog
-#      text if both providers fail)
-#   7. Tags + creates a GitHub Release whose body is WHAT / WHY with the technical
-#      detail (Changed + New) collapsed underneath, with kw-security.zip attached
+#   6. Reads the hand-written "What's new" / "Why it matters" sections out of
+#      the CHANGELOG.md entry (falls back to the technical text if absent)
+#   7. Tags + creates a GitHub Release whose body is those two sections with the
+#      technical detail (Changed + New) collapsed underneath, with
+#      kw-security.zip attached
 #   8. Announces the release in Slack
 #
 # CHANGELOG.md is the source of release notes and is REQUIRED: the extract step
@@ -25,8 +25,6 @@ name: Release
 #   - dry_run (optional): compute + build + lint, but don't push/tag/release
 #   - skip_changelog_check (optional): release without a CHANGELOG.md section
 #     (falls back to --generate-notes). Emergencies only.
-#   - release_context (optional): a paragraph of business context for this
-#     release. The main input the summary cannot derive from the code itself.
 #   - skip_announcement (optional): release without posting to Slack. The
 #     release notes are still written and the release still publishes; only the
 #     channel post is suppressed.
@@ -34,19 +32,12 @@ name: Release
 #     run. Also enables the announcement during a dry run, which is how the
 #     message gets tested without publishing.
 #
-# Configuration (all optional, none required for a release to succeed):
+# Configuration (optional, not required for a release to succeed):
 #   secrets.RELEASE_SLACK_WEBHOOK_URL  - where announcements go
-#   secrets.GROQ_API_KEY               - primary summary provider (free tier)
-#   vars.GROQ_MODEL                    - defaults to openai/gpt-oss-120b
-#   vars.GROQ_API_URL                  - defaults to Groq's OpenAI-compatible
-#                                        chat-completions endpoint
-#   secrets.GEMINI_API_KEY             - fallback summary provider (free tier)
-#   vars.GEMINI_MODEL                  - defaults to gemini-3.7-flash
-#   vars.GEMINI_API_URL                - defaults to the v1beta models endpoint
-# Either key alone is enough; with both, Groq is tried first and Gemini covers
-# its outages. With neither, the announcement falls back to the changelog text.
-# The summary prompt lives in .github/release-summary-prompt.md so it can be
-# tuned without touching this workflow.
+#
+# There is no AI in this workflow. "What's new" and "Why it matters" are written
+# by hand in CHANGELOG.md, so what the channel reads is exactly what somebody
+# wrote and reviewed.
 #
 # Branch protection note: this workflow pushes directly to main. If main has
 # protection requiring PR review, the github-actions[bot] needs a bypass rule,
@@ -64,10 +55,6 @@ on:
         required: false
         type: boolean
         default: false
-      release_context:
-        description: "Business context for this release, in a paragraph (feeds the plain-language WHAT/WHY)"
-        required: false
-        default: ""
       skip_changelog_check:
         description: "Release without a CHANGELOG.md section (emergencies only)"
         required: false
@@ -169,6 +156,26 @@ jobs:
           fi
           echo "commits=${COMMITS}" >> "$GITHUB_OUTPUT"
 
+          # Sections for versions newer than the newest tag were written for a
+          # release that never happened — an abandoned attempt, or a dry run
+          # somebody wrote notes for first. They are invisible: the workflow only
+          # ever publishes the one section matching the version being released,
+          # so that work reaches no release body and no channel. Warn loudly
+          # rather than fail: the release being run is still valid.
+          STALE=$(grep -oE '^## [0-9]{2}\.[0-9]{2}\.[0-9]{2}$' CHANGELOG.md 2>/dev/null | awk '{print $2}' | while read -r ver; do
+            [ "$ver" = "$V" ] && continue
+            [ -z "${PREV_TAG:-}" ] && continue
+            [ "$ver" = "$PREV_TAG" ] && continue
+            # Newer than the newest tag => never released.
+            if [ "$(printf '%s\n%s\n' "$ver" "$PREV_TAG" | sort -V | tail -n1)" = "$ver" ]; then
+              echo "$ver"
+            fi
+          done | paste -sd', ' -)
+
+          if [ -n "$STALE" ]; then
+            echo "::warning::CHANGELOG.md has sections for ${STALE}, newer than the latest tag (${PREV_TAG}) and not the version being released (${V}). Nothing in those sections will reach a release body or Slack. Fold them into the ${V} section, or release those versions first."
+          fi
+
           CHANGELOG="$RUNNER_TEMP/changelog.md"
 
           # Pull the block between "## <version>" and the next "## " heading.
@@ -204,286 +211,66 @@ jobs:
 
           echo "have_notes=true" >> "$GITHUB_OUTPUT"
 
-          # Technical-only cut of the same section: "### Changed" and "### New",
-          # without "### Problem". The release body pairs this with the
-          # plain-language WHAT / WHY, and Problem is the one subsection that
-          # says the same thing as "Why it matters" in developer voice. Changed
-          # and New stay, because they are the technical record of what shipped.
+          # The two plain-language sections, written by hand in CHANGELOG.md.
+          #
+          # They live in the changelog rather than a workflow input on purpose:
+          # workflow_dispatch inputs are single-line text boxes — GitHub has no
+          # multiline input type — so bullets and paragraphs cannot survive one.
+          # In the changelog they are written in a normal editor, reviewed in the
+          # pull request alongside the code, and kept in version control.
+          #
+          # Pulls the lines under a "### <heading>" up to the next "### ".
+          trim_file() {
+            sed -i -e '/./,$!d' "$1"
+            printf '%s\n' "$(cat "$1")" > "$1"
+          }
+
+          extract_subsection() {
+            awk -v pat="$1" '
+              /^###[[:space:]]+/ { inside = (tolower($0) ~ pat); next }
+              inside { print }
+            ' "$CHANGELOG" > "$2"
+            trim_file "$2"
+          }
+
+          extract_subsection '^###[[:space:]]+what' "$RUNNER_TEMP/what.md"
+          extract_subsection '^###[[:space:]]+why'  "$RUNNER_TEMP/why.md"
+
+          # Real content, not file size: trim_file rewrites an empty file as a
+          # single newline, so -s would call it non-empty and Slack would be
+          # handed an empty block, which it rejects outright.
+          has_content() { grep -q '[^[:space:]]' "$1" 2>/dev/null; }
+
+          if has_content "$RUNNER_TEMP/what.md" && has_content "$RUNNER_TEMP/why.md"; then
+            echo "have_summary=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::The ${V} changelog section is missing a What's new or Why it matters subsection. The announcement falls back to the technical notes."
+            echo "have_summary=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Technical-only cut: "### Changed" and "### New". What's new and Why
+          # it matters are dropped because they are rendered above this block,
+          # and "### Problem" because Why it matters now says the same thing in
+          # the voice this block's readers are not here for.
           TECHNICAL="$RUNNER_TEMP/changelog-technical.md"
           awk '
-            /^###[[:space:]]+/ { drop = (tolower($0) ~ /^###[[:space:]]+problem/) }
+            /^###[[:space:]]+/ { drop = (tolower($0) ~ /^###[[:space:]]+(problem|what|why)/) }
             !drop { print }
           ' "$CHANGELOG" > "$TECHNICAL"
+          trim_file "$TECHNICAL"
 
-          sed -i -e '/./,$!d' "$TECHNICAL"
-          printf '%s\n' "$(cat "$TECHNICAL")" > "$TECHNICAL"
-
-          # An entry that is only a Problem section leaves nothing technical
-          # behind. Better the full section than an empty collapsed block.
+          # An entry with no Changed or New leaves nothing technical behind.
+          # Better the full section than an empty collapsed block.
           if [ -z "$(grep -vE '^\s*(#|$)' "$TECHNICAL" || true)" ]; then
             echo "::notice::The ${V} changelog section has no Changed or New content; the technical detail block keeps the full section."
             cp "$CHANGELOG" "$TECHNICAL"
           fi
 
-          echo "Technical changelog section for ${V}:"
+          echo "Full changelog section for ${V}:"
           cat "$CHANGELOG"
 
-          echo "Technical detail block for ${V} (Problem dropped):"
+          echo "Technical detail block for ${V}:"
           cat "$TECHNICAL"
-
-      # Turns the technical changelog into the WHAT / WHY the channel actually
-      # reads. Best-effort by design: continue-on-error plus an explicit
-      # have_summary output, so a missing key, a rate limit, or a reply that
-      # drifts from the contract degrades to the hand-written changelog rather
-      # than blocking a release.
-      #
-      # Two providers, tried in order, each retried on transient failures:
-      #   1. Groq   — free tier, no card, OpenAI-compatible chat completions
-      #   2. Gemini — free tier, Google's own request shape
-      # A single provider is a single point of failure: an HTTP 503 ("model is
-      # experiencing high demand") on one busy afternoon is enough to drop a
-      # release to raw changelog text. Retries handle the blip, the second
-      # provider handles the outage, and the changelog is still the floor.
-      #
-      # A provider is also considered failed when its reply does not contain both
-      # sections, so a model that drifts from the contract hands over to the next
-      # one instead of forcing the fallback.
-      #
-      # Deliberately NOT using either provider's structured-output surface: the
-      # shapes differ between providers and between API generations, so the model
-      # is asked for two delimited markdown sections which are parsed with awk.
-      # Models and endpoints come from Actions variables, so a provider-side
-      # change is a config change rather than a code change.
-      - name: Summarize release for a non-technical audience
-        id: summary
-        continue-on-error: true
-        env:
-          GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL:      ${{ vars.GROQ_MODEL }}
-          GROQ_API_URL:    ${{ vars.GROQ_API_URL }}
-          GEMINI_API_KEY:  ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL:    ${{ vars.GEMINI_MODEL }}
-          GEMINI_API_URL:  ${{ vars.GEMINI_API_URL }}
-          V:               ${{ steps.version.outputs.version }}
-          PREV_TAG:        ${{ steps.notes.outputs.prev_tag }}
-          RELEASE_CONTEXT: ${{ github.event.inputs.release_context }}
-          PROMPT_FILE:     .github/release-summary-prompt.md
-        run: |
-          set -uo pipefail
-
-          if [ -z "${GROQ_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "::notice::Neither GROQ_API_KEY nor GEMINI_API_KEY is set. Skipping the plain-language summary; the announcement falls back to the changelog text."
-            echo "have_summary=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ ! -s "$PROMPT_FILE" ]; then
-            echo "::warning::${PROMPT_FILE} is missing or empty. Falling back to the changelog text."
-            echo "have_summary=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          GROQ_MODEL="${GROQ_MODEL:-openai/gpt-oss-120b}"
-          GROQ_URL="${GROQ_API_URL:-https://api.groq.com/openai/v1/chat/completions}"
-          GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.7-flash}"
-          GEMINI_BASE="${GEMINI_API_URL:-https://generativelanguage.googleapis.com/v1beta/models}"
-
-          RAW="$RUNNER_TEMP/summary-raw.md"
-
-          # Commit subjects since the last tag, minus the workflow's own version
-          # bump commits, which say nothing about the release.
-          if [ -n "${PREV_TAG:-}" ]; then
-            COMMIT_LOG=$(git log --pretty=%s "${PREV_TAG}..HEAD" | grep -vE '^chore: bump version' || true)
-          else
-            COMMIT_LOG=$(git log --pretty=%s | grep -vE '^chore: bump version' || true)
-          fi
-
-          CHANGELOG_TEXT=$(cat "$RUNNER_TEMP/changelog.md" 2>/dev/null || true)
-
-          USER_PROMPT=$(printf 'Version being released: %s\n\n=== Context from the person running the release ===\n%s\n\n=== Technical changelog for this version ===\n%s\n\n=== Change subjects since the previous release ===\n%s\n' \
-            "$V" \
-            "${RELEASE_CONTEXT:-(none supplied)}" \
-            "${CHANGELOG_TEXT:-(none)}" \
-            "${COMMIT_LOG:-(none)}")
-
-          SYSTEM_PROMPT=$(cat "$PROMPT_FILE")
-
-          # Retry schedule for transient failures. 503 "high demand" and 429 rate
-          # limits usually clear within seconds, so three attempts across ~26s is
-          # enough without holding the release open.
-          DELAYS=(2 6 18)
-
-          # POST with retries. $1 label, $2 url, $3 response file, $4 request
-          # body, rest are extra headers. Retries on curl failure, 408, 429 and
-          # any 5xx; a 4xx (bad key, bad model name) is final for that provider.
-          post_with_retry() {
-            local label="$1" url="$2" out="$3" data="$4"
-            shift 4
-            local -a extra_headers=("$@")
-            local attempt=1 code reason
-            while :; do
-              local -a args=(-sS -o "$out" -w '%{http_code}' --max-time 90 -X POST -H 'Content-Type: application/json')
-              local h
-              for h in "${extra_headers[@]}"; do args+=(-H "$h"); done
-              code=$(curl "${args[@]}" --data-binary "$data" "$url") || code="000"
-
-              if [ "$code" -ge 200 ] 2>/dev/null && [ "$code" -lt 300 ] 2>/dev/null; then
-                return 0
-              fi
-
-              # Surface only the message: an error body can echo request content.
-              reason=$(jq -r '(.error.message // .error // "no message") | tostring' "$out" 2>/dev/null || echo "unparseable response")
-
-              case "$code" in
-                000|408|429|5??) ;;
-                *)
-                  echo "::warning::${label} returned HTTP ${code} (${reason}). Not retryable."
-                  return 1
-                  ;;
-              esac
-
-              if [ "$attempt" -ge "${#DELAYS[@]}" ]; then
-                echo "::warning::${label} still failing after ${attempt} attempts (HTTP ${code}: ${reason})."
-                return 1
-              fi
-
-              echo "::notice::${label} returned HTTP ${code} (${reason}). Retrying in ${DELAYS[$((attempt - 1))]}s (attempt $((attempt + 1)) of ${#DELAYS[@]})."
-              sleep "${DELAYS[$((attempt - 1))]}"
-              attempt=$((attempt + 1))
-            done
-          }
-
-          # Each provider writes the model's raw text to $RAW and returns 0.
-          call_groq() {
-            [ -n "${GROQ_API_KEY:-}" ] || { echo "::notice::No GROQ_API_KEY secret set. Skipping Groq."; return 1; }
-
-            local request
-            request=$(jq -n \
-              --arg model "$GROQ_MODEL" \
-              --arg sys "$SYSTEM_PROMPT" \
-              --arg user "$USER_PROMPT" \
-              '{
-                model: $model,
-                temperature: 0.3,
-                max_completion_tokens: 2048,
-                messages: [
-                  { role: "system", content: $sys },
-                  { role: "user",   content: $user }
-                ]
-              }')
-
-            post_with_retry "Groq (${GROQ_MODEL})" "$GROQ_URL" "$RUNNER_TEMP/groq.json" "$request" \
-              "Authorization: Bearer ${GROQ_API_KEY}" || return 1
-
-            local text
-            text=$(jq -r '.choices[0].message.content // empty' "$RUNNER_TEMP/groq.json" 2>/dev/null)
-            if [ -z "$text" ]; then
-              local finish
-              finish=$(jq -r '.choices[0].finish_reason // "unknown"' "$RUNNER_TEMP/groq.json" 2>/dev/null || echo unknown)
-              echo "::warning::Groq returned no usable text (finish reason: ${finish})."
-              return 1
-            fi
-            printf '%s\n' "$text" > "$RAW"
-          }
-
-          call_gemini() {
-            [ -n "${GEMINI_API_KEY:-}" ] || { echo "::notice::No GEMINI_API_KEY secret set. Skipping Gemini."; return 1; }
-
-            local request
-            request=$(jq -n \
-              --arg sys "$SYSTEM_PROMPT" \
-              --arg user "$USER_PROMPT" \
-              '{
-                systemInstruction: { parts: [ { text: $sys } ] },
-                contents: [ { role: "user", parts: [ { text: $user } ] } ],
-                generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
-              }')
-
-            post_with_retry "Gemini (${GEMINI_MODEL})" "${GEMINI_BASE}/${GEMINI_MODEL}:generateContent" \
-              "$RUNNER_TEMP/gemini.json" "$request" \
-              "x-goog-api-key: ${GEMINI_API_KEY}" || return 1
-
-            local text
-            text=$(jq -r '[.candidates[0].content.parts[]?.text] | join("")' "$RUNNER_TEMP/gemini.json" 2>/dev/null)
-            if [ -z "$text" ] || [ "$text" = "null" ]; then
-              local finish
-              finish=$(jq -r '.candidates[0].finishReason // "unknown"' "$RUNNER_TEMP/gemini.json" 2>/dev/null || echo unknown)
-              echo "::warning::Gemini returned no usable text (finish reason: ${finish})."
-              return 1
-            fi
-            printf '%s\n' "$text" > "$RAW"
-          }
-
-          # Split on the two agreed headings, so a reply that drifts from the
-          # contract fails here instead of posting half a message.
-          parse_sections() {
-            awk 'tolower($0) ~ /^#{1,6}[[:space:]]*what/ { s="what"; next }
-                 tolower($0) ~ /^#{1,6}[[:space:]]*why/  { s="why";  next }
-                 s == "what" { print }' "$RAW" > "$RUNNER_TEMP/what.md"
-            awk 'tolower($0) ~ /^#{1,6}[[:space:]]*why/  { s="why";  next }
-                 s == "why" { print }' "$RAW" > "$RUNNER_TEMP/why.md"
-
-            local f
-            for f in "$RUNNER_TEMP/what.md" "$RUNNER_TEMP/why.md"; do
-              sed -i -e '/./,$!d' "$f"
-              printf '%s\n' "$(cat "$f")" > "$f"
-            done
-
-            # Test for real content, not file size: the trim above rewrites an
-            # empty file as a single newline, so -s would call it non-empty and a
-            # reply missing one section would post an empty block (which Slack
-            # rejects outright).
-            grep -q '[^[:space:]]' "$RUNNER_TEMP/what.md" 2>/dev/null || return 1
-            grep -q '[^[:space:]]' "$RUNNER_TEMP/why.md" 2>/dev/null || return 1
-          }
-
-          # Groq first, Gemini second. Both free tiers; whichever answers wins.
-          USED_MODEL=""
-          for PROVIDER in groq gemini; do
-            : > "$RAW"
-            case "$PROVIDER" in
-              groq)   call_groq   || continue; USED_MODEL="Groq ${GROQ_MODEL}" ;;
-              gemini) call_gemini || continue; USED_MODEL="Gemini ${GEMINI_MODEL}" ;;
-            esac
-
-            if parse_sections; then
-              break
-            fi
-
-            echo "::warning::${USED_MODEL} did not return both a What and a Why section. Trying the next provider."
-            {
-              echo "## Discarded ${USED_MODEL} reply for ${V}"
-              echo "The reply did not follow the two-section contract."
-              echo '```'
-              cat "$RAW"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            USED_MODEL=""
-          done
-
-          if [ -z "$USED_MODEL" ]; then
-            echo "::warning::No provider produced a usable summary. Falling back to the changelog text."
-            echo "have_summary=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "have_summary=true" >> "$GITHUB_OUTPUT"
-
-          # Logged so every release keeps a record of exactly what was generated,
-          # reviewable on the run even though it posts without an approval step.
-          {
-            echo "## Plain-language summary for ${V}"
-            echo "_Generated by ${USED_MODEL}. This is what was posted to Slack and used as the release body._"
-            echo
-            echo "### What"
-            cat "$RUNNER_TEMP/what.md"
-            echo
-            echo "### Why"
-            cat "$RUNNER_TEMP/why.md"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Summary generated by ${USED_MODEL}:"
-          cat "$RUNNER_TEMP/what.md" "$RUNNER_TEMP/why.md"
 
       # Release body: plain language first, technical detail collapsed underneath,
       # so one page serves both a client-facing reader and a developer. The
@@ -496,7 +283,7 @@ jobs:
           PREV_TAG:     ${{ steps.notes.outputs.prev_tag }}
           COMMITS:      ${{ steps.notes.outputs.commits }}
           HAVE_NOTES:   ${{ steps.notes.outputs.have_notes }}
-          HAVE_SUMMARY: ${{ steps.summary.outputs.have_summary }}
+          HAVE_SUMMARY: ${{ steps.notes.outputs.have_summary }}
         run: |
           set -euo pipefail
           NOTES="$RUNNER_TEMP/notes.md"
@@ -695,7 +482,7 @@ jobs:
           PREV_TAG:         ${{ steps.notes.outputs.prev_tag }}
           COMMITS:          ${{ steps.notes.outputs.commits }}
           HAVE_NOTES:       ${{ steps.notes.outputs.have_notes }}
-          HAVE_SUMMARY:     ${{ steps.summary.outputs.have_summary }}
+          HAVE_SUMMARY:     ${{ steps.notes.outputs.have_summary }}
           IS_DRY_RUN:       ${{ github.event.inputs.dry_run }}
         run: |
           set -uo pipefail
@@ -769,9 +556,9 @@ jobs:
             WHAT=$(to_mrkdwn "$RUNNER_TEMP/what.md")
             WHY=$(to_mrkdwn "$RUNNER_TEMP/why.md")
           elif [ "${HAVE_NOTES:-false}" = "true" ] && [ -f "$RUNNER_TEMP/changelog.md" ]; then
-            # No plain-language summary available, so the technical changelog is
-            # all there is. Say so, rather than letting it read as the intended
-            # format.
+            # The changelog entry has no What's new / Why it matters, so the
+            # technical text is all there is. Say so, rather than letting it read
+            # as the intended format.
             FALLBACK=$(to_mrkdwn "$RUNNER_TEMP/changelog.md")
           fi
 
@@ -779,6 +566,12 @@ jobs:
           if [ "$IS_DRY_RUN" = "true" ]; then
             HEADER=":test_tube: DRY RUN — KW Security ${V}"
           fi
+
+          # Notify everyone in the channel. <!channel> only resolves inside an
+          # mrkdwn section — a header block is plain_text, so a mention written
+          # there renders as the literal string "<!channel>". It also goes in the
+          # top-level text, which is what Slack shows in the notification itself.
+          CHANNEL_TAG="<!channel>"
 
           FOOTER="<${RELEASE_URL}|View release>  ·  <${COMPARE_URL}|${COMMITS} changes since ${PREV_TAG:-the beginning}>"
 
@@ -792,10 +585,12 @@ jobs:
               --arg what "$(truncate_body "$WHAT")" \
               --arg why "$(truncate_body "$WHY")" \
               --arg footer "$FOOTER" \
+              --arg tag "$CHANNEL_TAG" \
               '{
-                text: $header,
+                text: ($tag + " " + $header),
                 blocks: [
                   { type: "header", text: { type: "plain_text", text: $header, emoji: true } },
+                  { type: "section", text: { type: "mrkdwn", text: $tag } },
                   { type: "divider" },
                   { type: "section", text: { type: "mrkdwn", text: ("*What'"'"'s new*\n" + $what) } },
                   { type: "section", text: { type: "mrkdwn", text: ("*Why it matters*\n" + $why) } },
@@ -806,16 +601,18 @@ jobs:
             if [ -z "$FALLBACK" ]; then
               FALLBACK="_No release notes were available for this version._"
             else
-              FALLBACK=$(printf '_A plain-language summary was not available for this release, so the technical notes follow._\n\n%s' "$FALLBACK")
+              FALLBACK=$(printf '_This release has no hand-written summary, so the technical notes follow._\n\n%s' "$FALLBACK")
             fi
             PAYLOAD=$(jq -n \
               --arg header "$HEADER" \
               --arg body "$(truncate_body "$FALLBACK")" \
               --arg footer "$FOOTER" \
+              --arg tag "$CHANNEL_TAG" \
               '{
-                text: $header,
+                text: ($tag + " " + $header),
                 blocks: [
                   { type: "header", text: { type: "plain_text", text: $header, emoji: true } },
+                  { type: "section", text: { type: "mrkdwn", text: $tag } },
                   { type: "divider" },
                   { type: "section", text: { type: "mrkdwn", text: $body } },
                   { type: "context", elements: [ { type: "mrkdwn", text: $footer } ] }
