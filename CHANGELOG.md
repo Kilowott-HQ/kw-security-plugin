@@ -56,10 +56,18 @@ automatically, so add the heading for the version you are about to release.
 ### What's new
 - KW Security update availability on the dashboard now refreshes within about
   an hour of a new release, instead of sometimes taking up to half a day
+- The dashboard shows a site's configured login URL even while Hide Login
+  URL is switched off, so it can be previewed before turning the feature on
+- The Slack webhook and channel-link fields on the dashboard can now be set
+  or changed directly from there, instead of requiring a login to this
+  site's own Settings → KW Security page
 
 ### Why it matters
 - A just-released update could sit invisible on the dashboard for hours even
   though installing it already worked fine if you tried — this closes that gap
+- There was previously no way to see the configured login address unless the
+  feature was already on
+- Setting up Slack alerts for a new site meant logging into that site first
 
 ### Changed
 - `KW_Security_Telemetry::get_update_info()` now forces a fresh check against
@@ -71,6 +79,18 @@ automatically, so add the heading for the version you are about to release.
   dashboard-facing read in line with that. Runs once per hourly heartbeat per
   site — one extra GitHub call per site per hour, well inside GitHub's
   per-IP rate limit.
+- The heartbeat now reports `login_url` unconditionally —
+  `KW_Security_Settings::get_login_url()` is a pure function of the
+  configured slug, not of whether Hide Login URL is on, so there was no
+  reason to withhold it while the feature is off.
+
+### New
+- `POST /wp-json/kw-security/v1/set-slack-webhook` — lets the dashboard set
+  this site's own Slack webhook URL and channel-link bookmark remotely, same
+  signed-request model as `toggle-feature.php`, validated the same way the
+  settings page's own sanitizer already validates them. Refuses with a clear
+  message if the site's webhook is set via a constant or environment
+  variable, since a stored option would silently have no effect in that case.
 
 ## 26.08.04
 
