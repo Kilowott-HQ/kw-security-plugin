@@ -51,6 +51,27 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.05
+
+### What's new
+- KW Security update availability on the dashboard now refreshes within about
+  an hour of a new release, instead of sometimes taking up to half a day
+
+### Why it matters
+- A just-released update could sit invisible on the dashboard for hours even
+  though installing it already worked fine if you tried — this closes that gap
+
+### Changed
+- `KW_Security_Telemetry::get_update_info()` now forces a fresh check against
+  the plugin's GitHub releases (via PUC's `checkForUpdates()`) before reading
+  WordPress's `update_plugins` transient, instead of only reading whatever
+  that transient already has cached. PUC's own schedule only refreshes it
+  every ~12 hours; `classes/update-trigger.php`'s Update button already
+  forced this same check before upgrading, so this brings the passive
+  dashboard-facing read in line with that. Runs once per hourly heartbeat per
+  site — one extra GitHub call per site per hour, well inside GitHub's
+  per-IP rate limit.
+
 ## 26.08.04
 
 ### What's new
