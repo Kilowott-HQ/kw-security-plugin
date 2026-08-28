@@ -51,6 +51,38 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.07
+
+### What's new
+- The dashboard's "WP admin" button now logs straight into wp-admin with
+  one click, the same way a hosting platform's own "Log in to WordPress"
+  button works — no more typing a password
+- Activating or deactivating a plugin from the dashboard now shows who
+  actually did it in the Activity Log (e.g. "SuperAdmin (KW SECURITY
+  DASH)") instead of "Guest"
+
+### Why it matters
+- Getting into wp-admin to check something used to mean finding or
+  resetting a password first
+- "Guest" gave no way to tell a real anonymous visitor apart from a
+  legitimate dashboard action
+
+### New
+- `POST /wp-json/kw-security/v1/request-login` — issues a single-use,
+  60-second login token for a dedicated "KW Security Dashboard"
+  administrator account (created on first use, visible in the site's own
+  Users list like any other admin — never a hidden backdoor). A follow-up
+  request to `home_url('/?kw_security_login=...')` consumes the token and
+  establishes a real logged-in session, then redirects to wp-admin. The
+  resulting login is recorded in the Activity Log.
+- `KW_Security_Dashboard_Actor` (in `mu-plugins/kw-security-activator.php`,
+  always loaded) records which dashboard role is behind the current
+  activate/deactivate request, so `on_plugin_activated()`/
+  `on_plugin_deactivated()` in `classes/activity-log.php` can attribute the
+  resulting entry instead of defaulting to "Guest". Threaded through
+  `plugin-toggle.php` and the mu-plugin's own activate-plugin/
+  activate-wordfence routes.
+
 ## 26.08.06
 
 ### What's new
