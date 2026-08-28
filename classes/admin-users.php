@@ -29,7 +29,10 @@ if ( ! class_exists( 'KW_Security_Admin_Users' ) ) {
         const DASHBOARD_API_NAMESPACE = 'kw-security/v1';
         const DASHBOARD_API_ROUTE     = '/admin-users';
         const DELETE_API_ROUTE        = '/delete-admin-user';
+        const SEND_RESET_API_ROUTE    = '/send-password-reset';
+        const SET_PASSWORD_API_ROUTE  = '/set-password';
         const DASHBOARD_TS_WINDOW     = 300; // seconds — reject stale/replayed requests
+        const MIN_PASSWORD_LENGTH     = 12;
 
         // Same keypair as the plugin's other dashboard-triggered endpoints.
         // Safe to publish — verifies signatures, cannot forge them.
@@ -54,6 +57,18 @@ YQIDAQAB
                 'methods'             => WP_REST_Server::CREATABLE,
                 'callback'            => array( __CLASS__, 'handle_delete_request' ),
                 'permission_callback' => array( __CLASS__, 'authenticate_delete_request' ),
+            ) );
+
+            register_rest_route( self::DASHBOARD_API_NAMESPACE, self::SEND_RESET_API_ROUTE, array(
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => array( __CLASS__, 'handle_send_reset_request' ),
+                'permission_callback' => array( __CLASS__, 'authenticate_send_reset_request' ),
+            ) );
+
+            register_rest_route( self::DASHBOARD_API_NAMESPACE, self::SET_PASSWORD_API_ROUTE, array(
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => array( __CLASS__, 'handle_set_password_request' ),
+                'permission_callback' => array( __CLASS__, 'authenticate_set_password_request' ),
             ) );
         }
 
@@ -205,6 +220,167 @@ YQIDAQAB
                 'ok'            => true,
                 'deleted'       => $deleted_username,
                 'reassigned_to' => $reassign_user->user_login,
+            ), 200 );
+        }
+
+        // ----------------------------------------------------------------
+        // Password reset — two distinct actions: email the standard
+        // WordPress reset link (retrieve_password(), the same thing
+        // "Lost your password?" on wp-login.php sends), or set a new
+        // password directly. Both validated against the site's own
+        // administrator list first, same reasoning as delete above.
+        // ----------------------------------------------------------------
+
+        /**
+         * Only checks installation_id/timestamp/signature — user_id and
+         * (for set-password) new_password are bound into the signed
+         * message by the two authenticate_*_request() methods below,
+         * which call this with their own $message.
+         */
+        private static function verify_signature( WP_REST_Request $request, $message ) {
+            if ( strpos( home_url(), 'https://' ) === 0 && ! is_ssl() ) {
+                return new WP_Error( 'https_required', 'This endpoint requires HTTPS.', array( 'status' => 403 ) );
+            }
+
+            $timestamp = (int) $request->get_param( 'timestamp' );
+            $signature = (string) $request->get_param( 'signature' );
+            if ( ! $timestamp || ! $signature || abs( time() - $timestamp ) > self::DASHBOARD_TS_WINDOW ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $sig_bytes = base64_decode( $signature, true );
+            if ( false === $sig_bytes ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $pub = openssl_get_publickey( self::DASHBOARD_UPDATE_PUBLIC_KEY );
+            if ( false === $pub || 1 !== openssl_verify( $message, $sig_bytes, $pub, OPENSSL_ALGO_SHA256 ) ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            return true;
+        }
+
+        public static function authenticate_send_reset_request( WP_REST_Request $request ) {
+            $installation_id = sanitize_text_field( (string) $request->get_param( 'installation_id' ) );
+            $user_id          = (int) $request->get_param( 'user_id' );
+            $timestamp        = (int) $request->get_param( 'timestamp' );
+
+            if ( ! $installation_id || ! $user_id ) {
+                return new WP_Error( 'bad_request', 'Forbidden.', array( 'status' => 403 ) );
+            }
+            if ( ! class_exists( 'KW_Security_Telemetry' ) || $installation_id !== KW_Security_Telemetry::get_site_id() ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $message = $installation_id . '|send-password-reset|' . $user_id . '|' . $timestamp;
+            return self::verify_signature( $request, $message );
+        }
+
+        /**
+         * The new password is part of the signed message (like
+         * slack-webhook-set.php's webhook/channel values) so a captured
+         * signature can't be replayed with a different password.
+         */
+        public static function authenticate_set_password_request( WP_REST_Request $request ) {
+            $installation_id = sanitize_text_field( (string) $request->get_param( 'installation_id' ) );
+            $user_id          = (int) $request->get_param( 'user_id' );
+            $new_password     = (string) $request->get_param( 'new_password' );
+            $timestamp        = (int) $request->get_param( 'timestamp' );
+
+            if ( ! $installation_id || ! $user_id || '' === $new_password ) {
+                return new WP_Error( 'bad_request', 'Forbidden.', array( 'status' => 403 ) );
+            }
+            if ( ! class_exists( 'KW_Security_Telemetry' ) || $installation_id !== KW_Security_Telemetry::get_site_id() ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $message = $installation_id . '|set-password|' . $user_id . '|' . $new_password . '|' . $timestamp;
+            return self::verify_signature( $request, $message );
+        }
+
+        /**
+         * Only ever targets an existing administrator — same guard as
+         * handle_delete_request, so a stray user_id can't reach an
+         * unrelated account even though the signature already proves the
+         * request came from the dashboard.
+         */
+        private static function get_target_admin( $user_id ) {
+            $user = get_userdata( $user_id );
+            if ( ! $user || ! in_array( 'administrator', (array) $user->roles, true ) ) {
+                return null;
+            }
+            return $user;
+        }
+
+        public static function handle_send_reset_request( WP_REST_Request $request ) {
+            $user = self::get_target_admin( (int) $request->get_param( 'user_id' ) );
+            if ( ! $user ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => 'User not found, or is not an administrator.' ), 404 );
+            }
+
+            if ( ! function_exists( 'retrieve_password' ) ) {
+                require_once ABSPATH . 'wp-includes/user.php';
+            }
+
+            $result = retrieve_password( $user->user_login );
+            if ( is_wp_error( $result ) ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => $result->get_error_message() ), 500 );
+            }
+
+            return new WP_REST_Response( array(
+                'ok'      => true,
+                'message' => 'Reset link sent to ' . $user->user_email . '.',
+            ), 200 );
+        }
+
+        /**
+         * wp_set_password() already invalidates that user's other sessions
+         * as part of core's own behaviour — nothing extra needed here for
+         * that. after_password_reset (what activity-log.php normally
+         * listens for) only fires from the wp-login.php "rp" form flow,
+         * not from calling wp_set_password() directly, so this logs the
+         * entry itself instead, attributed to the dashboard role behind
+         * the request the same way plugin activate/deactivate is (see
+         * KW_Security_Dashboard_Actor in mu-plugins/kw-security-activator.php)
+         * — except here the role travels with this same request rather
+         * than a separate one, so it's used directly rather than through
+         * that shared holder.
+         */
+        public static function handle_set_password_request( WP_REST_Request $request ) {
+            $user = self::get_target_admin( (int) $request->get_param( 'user_id' ) );
+            if ( ! $user ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => 'User not found, or is not an administrator.' ), 404 );
+            }
+
+            $new_password = (string) $request->get_param( 'new_password' );
+            if ( strlen( $new_password ) < self::MIN_PASSWORD_LENGTH ) {
+                return new WP_REST_Response( array(
+                    'ok'      => false,
+                    'message' => 'Password must be at least ' . self::MIN_PASSWORD_LENGTH . ' characters.',
+                ), 400 );
+            }
+
+            wp_set_password( $new_password, $user->ID );
+
+            if ( class_exists( 'KW_Activity_Log' ) ) {
+                $args       = array(
+                    'action'      => 'Password Reset',
+                    'object_type' => 'User',
+                    'object_name' => $user->user_login,
+                    'object_id'   => $user->ID,
+                );
+                $actor_role = sanitize_key( (string) $request->get_param( 'actor_role' ) );
+                if ( $actor_role ) {
+                    $args['user_id']   = 0;
+                    $args['user_caps'] = 'kw-dashboard:' . $actor_role;
+                }
+                KW_Activity_Log::insert( $args );
+            }
+
+            return new WP_REST_Response( array(
+                'ok'      => true,
+                'message' => 'Password changed for ' . $user->user_login . '.',
             ), 200 );
         }
 
