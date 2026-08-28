@@ -204,9 +204,11 @@ if (!defined('ABSPATH')) {
                     'update_available'  => $update_info['update_available'],
                     'latest_version'    => $update_info['latest_version'],
                     'security_features' => self::get_security_features(),
-                    // Only meaningful once Hide Login URL is on; null otherwise
-                    // so the dashboard doesn't show a stale address.
-                    'login_url'         => ( class_exists('KW_Security_Settings') && KW_Security_Settings::is_enabled('hide_login_url') )
+                    // Reported regardless of whether Hide Login URL is on —
+                    // get_login_url() is a pure function of the configured
+                    // slug, not of the toggle, so the dashboard can show what
+                    // address the feature is set to use even while it's off.
+                    'login_url'         => class_exists('KW_Security_Settings')
                         ? KW_Security_Settings::get_login_url()
                         : null,
                     // Resolves constant/env/option precedence itself — an
