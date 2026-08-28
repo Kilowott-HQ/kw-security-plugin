@@ -358,12 +358,14 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                 require_once ABSPATH . 'wp-admin/includes/plugin.php';
             }
             $data = get_plugin_data( WP_PLUGIN_DIR . '/' . $plugin );
-            self::insert( array(
+            $args = array(
                 'action'         => 'Activated',
                 'object_type'    => 'Plugin',
                 'object_subtype' => $plugin,
                 'object_name'    => ! empty( $data['Name'] ) ? $data['Name'] : $plugin,
-            ) );
+            );
+            self::attribute_dashboard_actor( $args );
+            self::insert( $args );
         }
 
         public function on_plugin_deactivated( $plugin ) {
@@ -371,12 +373,14 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                 require_once ABSPATH . 'wp-admin/includes/plugin.php';
             }
             $data = get_plugin_data( WP_PLUGIN_DIR . '/' . $plugin );
-            self::insert( array(
+            $args = array(
                 'action'         => 'Deactivated',
                 'object_type'    => 'Plugin',
                 'object_subtype' => $plugin,
                 'object_name'    => ! empty( $data['Name'] ) ? $data['Name'] : $plugin,
-            ) );
+            );
+            self::attribute_dashboard_actor( $args );
+            self::insert( $args );
         }
 
         public function on_upgrader_complete( $upgrader, $hook_extra ) {
@@ -692,19 +696,68 @@ YQIDAQAB
         }
 
         /**
+         * If no real WordPress user is logged in for this request and a
+         * dashboard-triggered activate/deactivate set an actor role (see
+         * KW_Security_Dashboard_Actor in mu-plugins/kw-security-activator.php),
+         * attribute the log entry to that role instead of falling back to
+         * "Guest" once it's rendered.
+         */
+        private static function attribute_dashboard_actor( array &$args ) {
+            if ( get_current_user_id() ) {
+                return;
+            }
+            if ( ! class_exists( 'KW_Security_Dashboard_Actor' ) ) {
+                return;
+            }
+            $role = KW_Security_Dashboard_Actor::get();
+            if ( ! $role ) {
+                return;
+            }
+            $args['user_id']   = 0;
+            $args['user_caps'] = 'kw-dashboard:' . $role;
+        }
+
+        /**
+         * Human-readable label for a role known only by its dashboard key
+         * ('viewer' | 'admin' | 'superadmin') — capitalized the way the
+         * dashboard itself displays it, not just ucfirst().
+         */
+        private static function format_dashboard_role( $role ) {
+            $labels = array(
+                'superadmin' => 'SuperAdmin',
+                'admin'      => 'Admin',
+                'viewer'     => 'Viewer',
+            );
+            return isset( $labels[ $role ] ) ? $labels[ $role ] : ucfirst( $role );
+        }
+
+        /**
+         * Human-readable user label for a raw log row's user_caps — shared
+         * by column_user() (wp-admin table) and resolve_dashboard_user_label()
+         * (dashboard API), so both agree on how an entry is attributed.
+         */
+        public static function dashboard_actor_label( $user_caps ) {
+            if ( 0 === strpos( (string) $user_caps, 'kw-dashboard:' ) ) {
+                $role = substr( (string) $user_caps, strlen( 'kw-dashboard:' ) );
+                return self::format_dashboard_role( $role ) . ' (KW SECURITY DASH)';
+            }
+            if ( 'kw-dashboard' === $user_caps ) {
+                return 'KW Dashboard';
+            }
+            if ( 'system' === $user_caps ) {
+                return 'System';
+            }
+            return 'Guest';
+        }
+
+        /**
          * Human-readable user label for a raw log row — mirrors
          * column_user()'s logic so the dashboard and the wp-admin table
          * agree on how an entry is attributed.
          */
         private static function resolve_dashboard_user_label( $row ) {
             if ( ! (int) $row->user_id ) {
-                if ( 'kw-dashboard' === $row->user_caps ) {
-                    return 'KW Dashboard';
-                }
-                if ( 'system' === $row->user_caps ) {
-                    return 'System';
-                }
-                return 'Guest';
+                return self::dashboard_actor_label( $row->user_caps );
             }
             $user = get_userdata( (int) $row->user_id );
             return $user ? $user->display_name : ( 'Deleted User #' . (int) $row->user_id );
@@ -845,13 +898,7 @@ YQIDAQAB
 
                 public function column_user( $item ) {
                     if ( ! (int) $item->user_id ) {
-                        if ( 'kw-dashboard' === $item->user_caps ) {
-                            return '<em>' . esc_html__( 'KW Dashboard', 'kw-security' ) . '</em>';
-                        }
-                        if ( 'system' === $item->user_caps ) {
-                            return '<em>' . esc_html__( 'System', 'kw-security' ) . '</em>';
-                        }
-                        return '<em>' . esc_html__( 'Guest', 'kw-security' ) . '</em>';
+                        return '<em>' . esc_html( KW_Activity_Log::dashboard_actor_label( $item->user_caps ) ) . '</em>';
                     }
                     $user = get_userdata( (int) $item->user_id );
                     if ( ! $user ) {

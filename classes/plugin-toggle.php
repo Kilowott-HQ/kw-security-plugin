@@ -103,6 +103,15 @@ YQIDAQAB
             $plugin_file = sanitize_text_field((string) $request->get_param('plugin_file'));
             $enabled     = self::to_bool($request->get_param('enabled'));
 
+            // Lets activity-log.php's on_plugin_activated()/on_plugin_deactivated()
+            // attribute the resulting log entry to the dashboard role behind
+            // this request instead of "Guest" — see KW_Security_Dashboard_Actor
+            // in mu-plugins/kw-security-activator.php (always loaded, unlike
+            // this file, so it's guaranteed to already exist here).
+            if (class_exists('KW_Security_Dashboard_Actor')) {
+                KW_Security_Dashboard_Actor::set($request->get_param('actor_role'));
+            }
+
             if (!function_exists('get_plugins')) {
                 require_once ABSPATH . 'wp-admin/includes/plugin.php';
             }

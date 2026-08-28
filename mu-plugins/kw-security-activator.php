@@ -34,6 +34,33 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+if (!class_exists('KW_Security_Dashboard_Actor')) {
+
+    /**
+     * Holds which dashboard role (if any) is behind the activate/deactivate
+     * call happening in the current request, so activity-log.php's
+     * on_plugin_activated()/on_plugin_deactivated() hooks — which WordPress
+     * calls with no information about who triggered them — can attribute
+     * the resulting log entry to "SuperAdmin (KW SECURITY DASH)" instead of
+     * "Guest". Defined here, in the always-loaded mu-plugin, rather than in
+     * the main plugin's classes/ — this file's own routes need to set it
+     * before the main plugin's classes are necessarily loaded (e.g.
+     * activating KW Security itself for the first time), and classes/
+     * plugin-toggle.php sets it too once the main plugin is active.
+     */
+    class KW_Security_Dashboard_Actor {
+        private static $role = null;
+
+        public static function set($role) {
+            self::$role = $role ? sanitize_key((string) $role) : null;
+        }
+
+        public static function get() {
+            return self::$role;
+        }
+    }
+}
+
 if (!class_exists('KW_Security_Remote_Activator')) {
 
     class KW_Security_Remote_Activator {
@@ -126,10 +153,12 @@ YQIDAQAB
         }
 
         public static function handle(WP_REST_Request $request) {
+            KW_Security_Dashboard_Actor::set($request->get_param('actor_role'));
             return self::activate_plugin_file(self::PLUGIN_FILE, 'KW Security plugin files were not found on this site.');
         }
 
         public static function handle_wordfence(WP_REST_Request $request) {
+            KW_Security_Dashboard_Actor::set($request->get_param('actor_role'));
             return self::activate_plugin_file(self::WORDFENCE_PLUGIN_FILE, 'Wordfence plugin files were not found on this site.');
         }
 
