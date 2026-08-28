@@ -56,10 +56,19 @@ automatically, so add the heading for the version you are about to release.
 ### What's new
 - The Slack channel field is now a Channel ID instead of a pasted link —
   find it in Slack via the channel's details panel → Copy channel ID
+- The dashboard can ask a site to check in right now instead of waiting for
+  its next scheduled heartbeat — useful when a site has gone quiet and shows
+  as Inactive even though the plugin is fine
+- Any installed plugin can now be updated from the dashboard's Installed
+  Plugins list, not just KW Security itself
 
 ### Why it matters
 - A Channel ID is what Slack's own UI surfaces directly, rather than
   requiring you to already know how to construct or find a full link
+- A site can go stale on the dashboard when its own WP-Cron has stalled (no
+  traffic, a broken cron setup) — this gives a way to unstick it without
+  waiting or logging into wp-admin
+- Updating an out-of-date plugin previously meant logging into that site
 
 ### Changed
 - `kw_slack_channel_link` is superseded by `kw_slack_channel_id`. The
@@ -70,6 +79,20 @@ automatically, so add the heading for the version you are about to release.
   text, not a URL. `classes/slack-webhook-set.php`'s dashboard-write
   endpoint takes `channel_id` instead of `channel_link` in its signed
   request.
+
+### New
+- `POST /wp-json/kw-security/v1/refresh-heartbeat` — triggered by a REST
+  request rather than WP-Cron, so it works even when the site's own cron
+  has stalled. Calls `KW_Security_Telemetry::send_ping('heartbeat')`
+  directly.
+- `POST /wp-json/kw-security/v1/update-plugin-file` — updates any installed
+  plugin by file path, validated against `get_plugins()` first (the same
+  local-file-inclusion safeguard `plugin-toggle.php` already uses). Forces
+  WordPress's own generic update check (`wp_update_plugins()`) rather than
+  KW Security's specific GitHub-backed one (see `update-trigger.php`),
+  since an arbitrary plugin's update source varies. Applies the same
+  stuck-Inactive safety net as `update-trigger.php` when the plugin being
+  updated happens to be KW Security itself.
 
 ## 26.08.05
 
