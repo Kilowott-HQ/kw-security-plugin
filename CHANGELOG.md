@@ -51,6 +51,26 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.08
+
+### What's new
+- Admin Users has a Reset Password action — send the standard WordPress
+  reset-link email, or set a new password directly, both from the dashboard
+
+### Why it matters
+- Resetting an admin's password used to mean logging into that site first
+
+### New
+- `POST /wp-json/kw-security/v1/send-password-reset` — emails the standard
+  WordPress reset link via `retrieve_password()`, the same thing "Lost your
+  password?" on wp-login.php sends.
+- `POST /wp-json/kw-security/v1/set-password` — sets a new password
+  directly via `wp_set_password()` (which already invalidates that user's
+  other sessions on its own). Logged to the Activity Log, attributed to
+  the dashboard role behind the request, since `after_password_reset` only
+  fires from the wp-login.php form flow, not from calling
+  `wp_set_password()` directly.
+
 ## 26.08.07
 
 ### What's new
