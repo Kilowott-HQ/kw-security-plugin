@@ -268,12 +268,13 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'default'           => '',
             ) );
 
-            // Link to the Slack channel alerts land in — display-only, never
+            // ID of the Slack channel alerts land in — display-only, never
             // sent to; the webhook URL above doesn't itself reveal which
-            // channel it posts to.
-            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_CHANNEL_LINK, array(
+            // channel it posts to. Combined with the Team ID embedded in
+            // that webhook URL to build the dashboard's "View Channel" link.
+            register_setting( self::SETTINGS_GROUP, KW_Security_Alerts::OPTION_CHANNEL_ID, array(
                 'type'              => 'string',
-                'sanitize_callback' => array( $this, 'sanitize_slack_channel_link' ),
+                'sanitize_callback' => array( $this, 'sanitize_slack_channel_id' ),
                 'default'           => '',
             ) );
 
@@ -366,16 +367,17 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         }
 
         /**
-         * Sanitize the Slack channel link — a plain URL, not validated
-         * against a specific host the way the webhook is: this value is
-         * never sent to, only opened by a human, so there's no payload to
-         * protect against redirection.
+         * Sanitize the Slack channel ID — plain text, not validated against
+         * Slack's exact ID format the way the webhook is validated against
+         * its host: this value is never sent to, only combined with the
+         * webhook's Team ID to build a link a human opens, so a malformed
+         * value just makes that link not resolve rather than posing a risk.
          *
          * @param mixed $value
          * @return string
          */
-        public function sanitize_slack_channel_link( $value ) {
-            return esc_url_raw( trim( (string) $value ) );
+        public function sanitize_slack_channel_id( $value ) {
+            return sanitize_text_field( trim( (string) $value ) );
         }
 
         public function sanitize_slack_mention( $value ) {
@@ -788,22 +790,22 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             <?php
         }
 
-        public function render_slack_channel_link() {
-            $value = KW_Security_Alerts::get_channel_link();
+        public function render_slack_channel_id() {
+            $value = KW_Security_Alerts::get_channel_id();
             ?>
             <input
-                type="url"
-                id="kw_slack_channel_link"
-                name="<?php echo esc_attr( KW_Security_Alerts::OPTION_CHANNEL_LINK ); ?>"
+                type="text"
+                id="kw_slack_channel_id"
+                name="<?php echo esc_attr( KW_Security_Alerts::OPTION_CHANNEL_ID ); ?>"
                 value="<?php echo esc_attr( $value ); ?>"
                 class="regular-text"
-                placeholder="https://app.slack.com/client/T000/C000"
+                placeholder="C0123456789"
                 autocomplete="off"
                 spellcheck="false"
             />
             <p class="description">
                 <?php
-                echo wp_kses_post( __( 'Optional. In Slack, right-click the channel name → <em>Copy link</em>, and paste it here — this is only used for the Security Dashboard\'s "View Channel" link, never to send anything.', 'kw-security' ) );
+                echo wp_kses_post( __( 'Optional. In Slack, open the channel, click its name at the top, then <em>Copy channel ID</em> at the bottom of the details panel — this is combined with the webhook\'s own Team ID to build the Security Dashboard\'s "View Channel" link, never to send anything.', 'kw-security' ) );
                 ?>
             </p>
             <?php
@@ -1156,7 +1158,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'slack_alerts' => array(
                     array( 'label' => __( 'Webhook URL', 'kw-security' ),      'cb' => 'render_slack_webhook' ),
-                    array( 'label' => __( 'Channel Link', 'kw-security' ),     'cb' => 'render_slack_channel_link' ),
+                    array( 'label' => __( 'Channel ID', 'kw-security' ),       'cb' => 'render_slack_channel_id' ),
                     array( 'label' => __( 'Notify (mention)', 'kw-security' ), 'cb' => 'render_slack_mention' ),
                     array( 'label' => __( 'Events to send', 'kw-security' ),   'cb' => 'render_slack_categories' ),
                     array( 'label' => __( 'Wordfence relay', 'kw-security' ),  'cb' => 'render_wordfence_critical_only' ),

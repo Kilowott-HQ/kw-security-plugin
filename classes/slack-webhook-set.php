@@ -5,11 +5,10 @@
  * Registers POST /wp-json/kw-security/v1/set-slack-webhook
  *
  * Lets the Security Dashboard set this site's own Slack Incoming Webhook
- * URL and channel-link bookmark remotely, instead of requiring a login to
+ * URL and channel-ID bookmark remotely, instead of requiring a login to
  * this site's own Settings → KW Security page. Same signed-request model
  * as toggle-feature.php — the signed message includes both values, so a
- * captured signature can't be replayed with a different webhook or channel
- * link.
+ * captured signature can't be replayed with a different webhook or channel.
  */
 
 if (!defined('ABSPATH')) {
@@ -56,7 +55,7 @@ YQIDAQAB
 
             $installation_id = sanitize_text_field((string) $request->get_param('installation_id'));
             $webhook_url      = (string) $request->get_param('webhook_url');
-            $channel_link     = (string) $request->get_param('channel_link');
+            $channel_id       = (string) $request->get_param('channel_id');
             $timestamp        = (int) $request->get_param('timestamp');
             $signature        = (string) $request->get_param('signature');
 
@@ -72,7 +71,7 @@ YQIDAQAB
                 return new WP_Error('forbidden', 'Forbidden.', array('status' => 403));
             }
 
-            $message   = $installation_id . '|set-slack-webhook|' . $webhook_url . '|' . $channel_link . '|' . $timestamp;
+            $message   = $installation_id . '|set-slack-webhook|' . $webhook_url . '|' . $channel_id . '|' . $timestamp;
             $sig_bytes = base64_decode($signature, true);
             if (false === $sig_bytes) {
                 return new WP_Error('forbidden', 'Forbidden.', array('status' => 403));
@@ -87,9 +86,9 @@ YQIDAQAB
         }
 
         /**
-         * Stores the webhook and channel link through the same validation
-         * the settings page's own sanitizer uses, so a remote change can't
-         * end up in a state the settings page itself would never allow.
+         * Stores the webhook and channel ID through the same validation the
+         * settings page's own sanitizer uses, so a remote change can't end
+         * up in a state the settings page itself would never allow.
          */
         public static function handle(WP_REST_Request $request) {
             if (!class_exists('KW_Security_Alerts')) {
@@ -107,8 +106,8 @@ YQIDAQAB
                 ), 409);
             }
 
-            $webhook_url  = esc_url_raw(trim((string) $request->get_param('webhook_url')));
-            $channel_link = esc_url_raw(trim((string) $request->get_param('channel_link')));
+            $webhook_url = esc_url_raw(trim((string) $request->get_param('webhook_url')));
+            $channel_id  = sanitize_text_field(trim((string) $request->get_param('channel_id')));
 
             if ('' !== $webhook_url && !KW_Security_Alerts::is_valid_webhook($webhook_url)) {
                 return new WP_REST_Response(array(
@@ -118,12 +117,12 @@ YQIDAQAB
             }
 
             update_option(KW_Security_Alerts::OPTION_WEBHOOK, $webhook_url);
-            update_option(KW_Security_Alerts::OPTION_CHANNEL_LINK, $channel_link);
+            update_option(KW_Security_Alerts::OPTION_CHANNEL_ID, $channel_id);
 
             return new WP_REST_Response(array(
-                'ok'           => true,
-                'webhook_url'  => $webhook_url,
-                'channel_link' => $channel_link,
+                'ok'          => true,
+                'webhook_url' => $webhook_url,
+                'channel_id'  => $channel_id,
             ), 200);
         }
     }

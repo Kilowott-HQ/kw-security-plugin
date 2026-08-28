@@ -215,7 +215,7 @@ if (!defined('ABSPATH')) {
                     // overridden webhook (wp-config.php / environment) shows
                     // up here too, not just one stored in the database.
                     'slack_webhook_url'  => class_exists('KW_Security_Alerts') ? ( KW_Security_Alerts::get_webhook_url() ?: null ) : null,
-                    'slack_channel_link' => class_exists('KW_Security_Alerts') ? ( KW_Security_Alerts::get_channel_link() ?: null ) : null,
+                    'slack_channel_id'   => class_exists('KW_Security_Alerts') ? ( KW_Security_Alerts::get_channel_id() ?: null ) : null,
                 )),
             ));
 
