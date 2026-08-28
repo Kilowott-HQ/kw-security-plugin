@@ -51,6 +51,26 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.06
+
+### What's new
+- The Slack channel field is now a Channel ID instead of a pasted link —
+  find it in Slack via the channel's details panel → Copy channel ID
+
+### Why it matters
+- A Channel ID is what Slack's own UI surfaces directly, rather than
+  requiring you to already know how to construct or find a full link
+
+### Changed
+- `kw_slack_channel_link` is superseded by `kw_slack_channel_id`. The
+  dashboard now builds the "View Channel" link itself, combining this ID
+  with the Team ID already embedded in the webhook URL, instead of
+  requiring a full link to be pasted in. The settings-page field and its
+  sanitizer (`sanitize_slack_channel_id`) were updated to match — plain
+  text, not a URL. `classes/slack-webhook-set.php`'s dashboard-write
+  endpoint takes `channel_id` instead of `channel_link` in its signed
+  request.
+
 ## 26.08.05
 
 ### What's new
