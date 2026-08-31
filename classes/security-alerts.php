@@ -40,15 +40,19 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         const OPTION_MENTION    = 'kw_slack_mention';
         const OPTION_FM_BASELINE = 'kw_slack_fm_baseline_done'; // one-time file-manager sweep flag.
         const OPTION_WF_CRITICAL_ONLY = 'kw_slack_wordfence_critical_only'; // relay only critical WF emails.
-        // Per-version de-dupe for watched-plugin updates. Deliberately NOT the
-        // same option as kw_slack_alerted_updates (plugin_update_critical): the
-        // two producers would otherwise suppress each other's alerts.
+        // Per-version de-dupe sets for the two update alerts. Deliberately
+        // separate options: one shared set would let either producer suppress
+        // the other's alerts.
         const OPTION_WATCHED_UPDATES  = 'kw_slack_alerted_watched_updates';
+        const OPTION_CRITICAL_UPDATES = 'kw_slack_alerted_updates';
         const CONST_WEBHOOK     = 'KW_SLACK_WEBHOOK_URL';
         const ENV_WEBHOOK       = 'KW_SLACK_WEBHOOK_URL';
         const CONST_MENTION     = 'KW_SLACK_MENTION';
         const ENV_MENTION       = 'KW_SLACK_MENTION';
         const DEDUPE_WINDOW     = 300; // seconds — collapse identical alerts.
+        // How long a "we already said this" entry stands before the same,
+        // still-unapplied update becomes worth mentioning again: 90 days.
+        const UPDATE_ALERT_TTL  = 7776000;
         const MAX_QUEUE         = 50;  // hard cap on per-request queued alerts.
 
         /** @var array<int,array{url:string,body:string,key:string}> Pending sends, flushed on shutdown. */
@@ -1159,7 +1163,9 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
          * security release produces one alert, not two. Each branch keeps its
          * own persistent per-version set (keyed file@version) so a standing
          * update isn't re-alerted on every refresh; sharing one set would let
-         * either branch suppress the other.
+         * either branch suppress the other. That set is only ever pruned on
+         * positive evidence — see prune_alerted_updates(), which explains why
+         * absence from the transient being written proves nothing.
          *
          * @param object $transient The update_plugins site transient.
          */
@@ -1187,14 +1193,12 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             }
 
             $checked = ( isset( $transient->checked ) && is_array( $transient->checked ) ) ? $transient->checked : array();
-            $alerted = get_option( 'kw_slack_alerted_updates', array() );
-            if ( ! is_array( $alerted ) ) {
-                $alerted = array();
-            }
+            $alerted = self::get_alerted_updates( self::OPTION_CRITICAL_UPDATES );
+            $pruned  = $this->prune_alerted_updates( $alerted, $checked );
+            $changed = ( $pruned !== $alerted );
+            $alerted = $pruned;
 
-            $relevant   = array();
-            $to_send    = array();
-            $changed    = false;
+            $to_send = array();
 
             $watched = $this->watched_plugins();
 
@@ -1207,9 +1211,8 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                     continue;
                 }
                 $new_ver = (string) $update->new_version;
-                $cur_ver = isset( $checked[ $file ] ) ? (string) $checked[ $file ] : '';
+                $cur_ver = $this->installed_plugin_version( $file, $checked );
                 $key     = $file . '@' . $new_ver;
-                $relevant[ $key ] = true;
 
                 $is_major    = ( '' !== $cur_ver && $this->is_major_bump( $cur_ver, $new_ver ) );
                 $is_security = ( ! empty( $update->upgrade_notice )
@@ -1230,15 +1233,8 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 $changed         = true;
             }
 
-            // Drop entries no longer offered (plugin updated or removed).
-            foreach ( array_keys( $alerted ) as $k ) {
-                if ( ! isset( $relevant[ $k ] ) ) {
-                    unset( $alerted[ $k ] );
-                    $changed = true;
-                }
-            }
             if ( $changed ) {
-                update_option( 'kw_slack_alerted_updates', $alerted, false );
+                self::save_alerted_updates( self::OPTION_CRITICAL_UPDATES, $alerted );
             }
 
             foreach ( $to_send as $a ) {
@@ -1275,29 +1271,26 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             $watched = $this->watched_plugins();
             $checked = ( isset( $transient->checked ) && is_array( $transient->checked ) ) ? $transient->checked : array();
 
-            $alerted = get_option( self::OPTION_WATCHED_UPDATES, array() );
-            if ( ! is_array( $alerted ) ) {
-                $alerted = array();
-            }
+            $alerted = self::get_alerted_updates( self::OPTION_WATCHED_UPDATES );
+            $pruned  = $this->prune_alerted_updates( $alerted, $checked );
+            $changed = ( $pruned !== $alerted );
+            $alerted = $pruned;
 
-            $relevant = array();
-            $to_send  = array();
-            $changed  = false;
+            $to_send = array();
 
             foreach ( $transient->response as $file => $update ) {
                 if ( ! in_array( $file, $watched, true ) || empty( $update->new_version ) ) {
                     continue;
                 }
                 $new_ver = (string) $update->new_version;
-                $cur_ver = isset( $checked[ $file ] ) ? (string) $checked[ $file ] : '';
+                $cur_ver = $this->installed_plugin_version( $file, $checked );
 
                 // Nothing to say when the "update" is the installed version.
                 if ( '' !== $cur_ver && version_compare( $cur_ver, $new_ver, '>=' ) ) {
                     continue;
                 }
 
-                $key              = $file . '@' . $new_ver;
-                $relevant[ $key ] = true;
+                $key = $file . '@' . $new_ver;
                 if ( isset( $alerted[ $key ] ) ) {
                     continue;
                 }
@@ -1307,16 +1300,8 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 $changed         = true;
             }
 
-            // Drop entries no longer offered (plugin updated or removed), so a
-            // future re-release of the same version can alert again.
-            foreach ( array_keys( $alerted ) as $k ) {
-                if ( ! isset( $relevant[ $k ] ) ) {
-                    unset( $alerted[ $k ] );
-                    $changed = true;
-                }
-            }
             if ( $changed ) {
-                update_option( self::OPTION_WATCHED_UPDATES, $alerted, false );
+                self::save_alerted_updates( self::OPTION_WATCHED_UPDATES, $alerted );
             }
 
             foreach ( $to_send as $a ) {
@@ -1339,6 +1324,148 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                     )
                 );
             }
+        }
+
+        /**
+         * Read a per-version "already alerted" set.
+         *
+         * update_plugins is a NETWORK-wide site transient, so on multisite the
+         * hook fires on whichever site happens to serve the request while the
+         * update itself is network-wide. Per-site options would therefore give
+         * one alert per subsite for the same version; the set is kept network
+         * wide to match the thing it is tracking.
+         *
+         * @param string $option Option name.
+         * @return array<string,int> key => unix time first alerted.
+         */
+        private static function get_alerted_updates( $option ) {
+            $alerted = is_multisite()
+                ? get_site_option( $option, array() )
+                : get_option( $option, array() );
+
+            return is_array( $alerted ) ? $alerted : array();
+        }
+
+        /**
+         * Persist a per-version "already alerted" set. Counterpart to
+         * get_alerted_updates(); see there for the multisite reasoning.
+         *
+         * @param string             $option  Option name.
+         * @param array<string,int>  $alerted Set to store.
+         */
+        private static function save_alerted_updates( $option, array $alerted ) {
+            if ( is_multisite() ) {
+                update_site_option( $option, $alerted );
+                return;
+            }
+            update_option( $option, $alerted, false );
+        }
+
+        /**
+         * Installed plugins, or null when they can't be read — so callers can
+         * leave state alone rather than act on a guess.
+         *
+         * @return array<string,array>|null
+         */
+        private function installed_plugins() {
+            if ( ! function_exists( 'get_plugins' ) ) {
+                if ( ! defined( 'ABSPATH' ) || ! file_exists( ABSPATH . 'wp-admin/includes/plugin.php' ) ) {
+                    return null;
+                }
+                require_once ABSPATH . 'wp-admin/includes/plugin.php';
+            }
+
+            return function_exists( 'get_plugins' ) ? get_plugins() : null;
+        }
+
+        /**
+         * Installed version of a plugin: the transient's own checked map when
+         * it has one, else the plugin header on disk.
+         *
+         * The fallback matters because the transient written before an update
+         * check carries whatever checked map was already stored — none at all
+         * when the transient had just been flushed, which is what produced
+         * "Installed: unknown" in the Slack alerts.
+         *
+         * @param string $file    Plugin file.
+         * @param array  $checked The transient's checked map.
+         * @return string Version, or '' when it can't be determined.
+         */
+        private function installed_plugin_version( $file, $checked ) {
+            if ( is_array( $checked ) && isset( $checked[ $file ] ) ) {
+                return (string) $checked[ $file ];
+            }
+
+            $plugins = $this->installed_plugins();
+            if ( ! is_array( $plugins ) || empty( $plugins[ $file ]['Version'] ) ) {
+                return '';
+            }
+
+            return (string) $plugins[ $file ]['Version'];
+        }
+
+        /**
+         * Whether a plugin is still installed. Null when that can't be read.
+         *
+         * @param string $file Plugin file.
+         * @return bool|null
+         */
+        private function plugin_is_installed( $file ) {
+            $plugins = $this->installed_plugins();
+
+            return is_array( $plugins ) ? isset( $plugins[ $file ] ) : null;
+        }
+
+        /**
+         * Drop "already alerted" entries that have stopped being true.
+         *
+         * Absence from the transient currently being written is NOT evidence
+         * of anything, which is why this doesn't look at it. WordPress writes
+         * update_plugins twice per check: once with the value it just read
+         * (filtered, so it carries entries injected by bundled updaters such
+         * as this plugin's own PUC instance) and once with the wp.org response
+         * alone (which never carries them). Purging on absence meant the
+         * second write erased what the first had just recorded, and the next
+         * check re-announced the same version — hourly, forever.
+         *
+         * An entry is dropped only on positive evidence: the update was
+         * installed, the plugin is gone, or the entry is old enough that a
+         * still-unapplied update is worth raising again.
+         *
+         * @param array<string,int> $alerted Current set.
+         * @param array             $checked The transient's checked map.
+         * @return array<string,int> Set with dead entries removed.
+         */
+        private function prune_alerted_updates( array $alerted, array $checked ) {
+            $now  = time();
+            $keep = array();
+
+            foreach ( $alerted as $key => $when ) {
+                $at = strrpos( (string) $key, '@' );
+                if ( false === $at || ! is_numeric( $when ) ) {
+                    continue; // Malformed — nothing worth preserving.
+                }
+                if ( ( $now - (int) $when ) > self::UPDATE_ALERT_TTL ) {
+                    continue;
+                }
+
+                $file = substr( (string) $key, 0, $at );
+                $ver  = substr( (string) $key, $at + 1 );
+
+                // The update was applied.
+                $installed = $this->installed_plugin_version( $file, $checked );
+                if ( '' !== $installed && version_compare( $installed, $ver, '>=' ) ) {
+                    continue;
+                }
+                // The plugin was removed outright.
+                if ( false === $this->plugin_is_installed( $file ) ) {
+                    continue;
+                }
+
+                $keep[ $key ] = (int) $when;
+            }
+
+            return $keep;
         }
 
         /**

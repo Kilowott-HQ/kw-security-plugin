@@ -56,9 +56,33 @@ automatically, so add the heading for the version you are about to release.
 ### What's new
 - Admin Users has a Reset Password action — send the standard WordPress
   reset-link email, or set a new password directly, both from the dashboard
+- Slack announces an available plugin update once per version, instead of
+  repeating the same update every hour or two until someone installed it
 
 ### Why it matters
 - Resetting an admin's password used to mean logging into that site first
+- The repeated update alerts were burying the alerts that need someone to act
+
+### Changed
+- The two update alerts (`watched_plugin_update`, `plugin_update_critical`)
+  no longer forget that they already alerted. WordPress writes the
+  `update_plugins` transient twice per check: first the value it just read
+  (filtered, so it carries entries injected by bundled updaters such as this
+  plugin's own PUC instance), then the wp.org response alone (which never
+  carries them). The old cleanup dropped any `file@version` entry missing
+  from the transient being written, so the second write erased what the first
+  had just recorded and the next check re-announced the same version — every
+  1-2 hours, per WordPress's own check throttle. Entries are now dropped only
+  on positive evidence: the update was installed, the plugin is gone, or the
+  entry has stood for 90 days (`UPDATE_ALERT_TTL`).
+- Update alerts read the installed version from the plugin header when the
+  transient carries no `checked` map, rather than reporting
+  "Installed: unknown".
+- The de-dupe sets are stored network-wide on multisite, since
+  `update_plugins` is itself a network-wide transient and the hook fires on
+  whichever site serves the request — one update no longer alerts once per
+  subsite. The network option starts empty, so expect one final alert per
+  pending update on multisite after this upgrade.
 
 ### New
 - `POST /wp-json/kw-security/v1/send-password-reset` — emails the standard
