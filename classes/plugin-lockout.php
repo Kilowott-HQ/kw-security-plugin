@@ -2,37 +2,37 @@
 /**
  * KW Security – Plugin Lockout
  *
- * When enabled, disables managing plugins on this site — even for
- * logged-in Administrators — via wp-admin, while leaving the Installed
- * Plugins list itself visible.
+ * When enabled, blocks managing exactly three plugins — KW Security, KW
+ * Performance, and Wordfence, the site's own security/monitoring tooling —
+ * even for logged-in Administrators, via wp-admin. Every other installed
+ * plugin is completely unaffected.
  *
- * install_plugins, update_plugins, delete_plugins, and edit_plugins (the
- * Plugin File Editor) are each their own bare primitive capability, so
- * stripping them via map_meta_cap() closes the Add Plugins screen, plugin
- * updates, plugin deletion, and the file editor without touching anything
- * else — those screens have no separate "view" mode to preserve.
+ * install_plugins, update_plugins, delete_plugins, edit_plugins, and
+ * activate_plugins are all bare, whole-site WordPress capabilities — none
+ * of them are scoped per-plugin, so "can manage plugin A but not plugin B"
+ * isn't expressible as a capability at all. This never strips any of them
+ * (every wp-admin plugin screen works normally for anything other than the
+ * three locked plugins, including Add Plugins and the Plugin File Editor)
+ * and instead blocks specific *requests* on admin_init, before the target
+ * page's own handler runs, by checking which plugin(s) the request
+ * actually names against the locked list:
  *
- * activate_plugins is different: WordPress maps activate_plugin,
- * deactivate_plugin, and deactivate_plugins to that same single primitive
- * (see map_meta_cap()'s 'activate_plugins' case in wp-includes/capabilities.php),
- * and wp-admin/plugins.php's own top-of-file gate is
- * current_user_can('activate_plugins') — the same capability that controls
- * merely loading the page at all. There is no way to grant "can see the
- * list" without also granting "can activate/deactivate" through
- * capabilities alone. So activate_plugins is left granted (the list stays
- * visible, matching every other Installed Plugins view in wp-admin), and
- * activate/deactivate are blocked at the request level instead: an
- * admin_init hook rejects any plugins.php request that isn't a plain page
- * view before plugins.php's own handler ever runs, and the Activate/
- * Deactivate row and bulk-action links are hidden so there is nothing
- * clickable that would hit that block anyway.
+ *   - plugins.php    — activate/deactivate/delete (single: `plugin`,
+ *                       bulk: `checked[]`, WP_List_Table's standard
+ *                       checkbox field name).
+ *   - update.php     — single update (`action=upgrade-plugin`, `plugin`),
+ *                       bulk update (`action=update-selected`, `plugins`
+ *                       or `checked[]`), and install (`action=install-plugin`,
+ *                       `plugin` — here it's a slug, e.g. "wordfence", not
+ *                       a folder/file.php path).
+ *   - plugin-editor.php — the `file` param's leading path segment.
  *
  * The dashboard's own remote endpoints (classes/plugin-toggle.php,
  * classes/update-trigger.php, classes/plugin-file-update.php,
  * classes/plugin-install.php) call activate_plugin() / deactivate_plugins()
  * / Plugin_Upgrader::upgrade() / Plugin_Upgrader::install() directly — none
- * of which check capabilities — and never touch wp-admin/plugins.php, so
- * none of them are affected by any of this.
+ * of which check capabilities or run through wp-admin at all — so they're
+ * unaffected regardless of any of this, for any of the three plugins.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -43,103 +43,138 @@ if ( ! class_exists( 'KW_Plugin_Lockout' ) ) {
 
     class KW_Plugin_Lockout {
 
-        const LOCKED_CAPS = array( 'install_plugins', 'update_plugins', 'delete_plugins', 'edit_plugins' );
+        const LOCKED_PLUGIN_FILES = array(
+            'kw-security/kw-security.php',
+            'kw-performance/kw-performance.php',
+            'wordfence/wordfence.php',
+        );
+
+        // Directory-name form, for the two surfaces (install, file editor)
+        // that key off a plugin's slug rather than its main file.
+        const LOCKED_PLUGIN_SLUGS = array( 'kw-security', 'kw-performance', 'wordfence' );
 
         public function __construct() {
-            add_filter( 'map_meta_cap', array( $this, 'strip_plugin_management_caps' ), 10, 2 );
-            add_filter( 'plugin_action_links', array( $this, 'strip_row_actions' ), 999 );
-            add_filter( 'bulk_actions-plugins', array( $this, 'strip_bulk_actions' ), 999 );
+            add_filter( 'plugin_action_links', array( $this, 'strip_row_actions' ), 999, 2 );
             add_action( 'admin_init', array( $this, 'block_mutating_requests' ), 1 );
             add_action( 'admin_notices', array( $this, 'notice' ) );
         }
 
         /**
-         * Revokes install_plugins, update_plugins, delete_plugins, and
-         * edit_plugins by mapping them to a capability no role holds — the
-         * same mechanism core itself uses to revoke a capability outright.
-         * Deliberately does NOT touch activate_plugins — see the file
-         * docblock for why that one has to be handled differently.
-         *
-         * @param array  $caps Required capabilities so far.
-         * @param string $cap  Requested capability.
-         * @return array
+         * Hides the Activate/Deactivate/Delete row links, but only on the
+         * three locked plugins' own rows — $plugin_file identifies exactly
+         * which row this is, so every other plugin's row is untouched.
          */
-        public function strip_plugin_management_caps( $caps, $cap ) {
-            if ( in_array( $cap, self::LOCKED_CAPS, true ) ) {
-                return array( 'do_not_allow' );
+        public function strip_row_actions( $actions, $plugin_file ) {
+            if ( in_array( $plugin_file, self::LOCKED_PLUGIN_FILES, true ) ) {
+                unset( $actions['activate'], $actions['deactivate'], $actions['delete'] );
             }
-            return $caps;
-        }
-
-        /**
-         * Hides the per-row Activate/Deactivate/Delete links on the
-         * Installed Plugins list so nothing clickable leads to
-         * block_mutating_requests() below. Delete is already unreachable
-         * via delete_plugins being stripped, but core still shows the link
-         * unless removed here too.
-         */
-        public function strip_row_actions( $actions ) {
-            unset( $actions['activate'], $actions['deactivate'], $actions['delete'] );
             return $actions;
         }
 
-        /**
-         * Same idea for the "Bulk actions" dropdown above the list.
-         */
-        public function strip_bulk_actions( $actions ) {
-            unset(
-                $actions['activate-selected'],
-                $actions['deactivate-selected'],
-                $actions['delete-selected'],
-                $actions['update-selected']
-            );
-            return $actions;
-        }
-
-        /**
-         * plugins.php handles activate/deactivate itself, gated only by
-         * activate_plugins — the same capability required just to load the
-         * page — so it can't be blocked by stripping a capability without
-         * also hiding the list. This runs on admin_init, before
-         * plugins.php's own action-handling code, and rejects any request
-         * carrying a real action (activate, deactivate, activate-selected,
-         * deactivate-selected, etc. — the list table's own "-1"
-         * placeholder means no action was actually chosen). A bare page
-         * view — including the harmless Screen Options POST, which
-         * carries no action/action2 at all — is left alone.
-         */
         public function block_mutating_requests() {
             global $pagenow;
-            if ( 'plugins.php' !== $pagenow ) {
+
+            if ( 'plugins.php' === $pagenow ) {
+                $action  = isset( $_REQUEST['action'] ) ? sanitize_key( wp_unslash( $_REQUEST['action'] ) ) : '';
+                $action2 = isset( $_REQUEST['action2'] ) ? sanitize_key( wp_unslash( $_REQUEST['action2'] ) ) : '';
+                $has_action = ( '' !== $action && '-1' !== $action ) || ( '' !== $action2 && '-1' !== $action2 );
+                if ( ! $has_action ) {
+                    return;
+                }
+                if ( self::targets_locked_file( self::requested_plugin_files() ) ) {
+                    self::die_locked();
+                }
                 return;
             }
 
-            $action  = isset( $_REQUEST['action'] ) ? sanitize_key( wp_unslash( $_REQUEST['action'] ) ) : '';
-            $action2 = isset( $_REQUEST['action2'] ) ? sanitize_key( wp_unslash( $_REQUEST['action2'] ) ) : '';
-            $has_action = ( '' !== $action && '-1' !== $action ) || ( '' !== $action2 && '-1' !== $action2 );
+            if ( 'update.php' === $pagenow ) {
+                $action = isset( $_REQUEST['action'] ) ? sanitize_key( wp_unslash( $_REQUEST['action'] ) ) : '';
 
-            if ( ! $has_action ) {
+                if ( 'upgrade-plugin' === $action ) {
+                    $plugin = isset( $_REQUEST['plugin'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['plugin'] ) ) : '';
+                    if ( in_array( $plugin, self::LOCKED_PLUGIN_FILES, true ) ) {
+                        self::die_locked();
+                    }
+                } elseif ( 'update-selected' === $action ) {
+                    $plugins = array();
+                    if ( isset( $_GET['plugins'] ) ) {
+                        $plugins = explode( ',', stripslashes( (string) wp_unslash( $_GET['plugins'] ) ) );
+                    } elseif ( isset( $_POST['checked'] ) ) {
+                        $plugins = (array) wp_unslash( $_POST['checked'] );
+                    }
+                    if ( self::targets_locked_file( $plugins ) ) {
+                        self::die_locked();
+                    }
+                } elseif ( 'install-plugin' === $action ) {
+                    $slug = isset( $_REQUEST['plugin'] ) ? sanitize_key( wp_unslash( $_REQUEST['plugin'] ) ) : '';
+                    if ( in_array( $slug, self::LOCKED_PLUGIN_SLUGS, true ) ) {
+                        self::die_locked();
+                    }
+                }
                 return;
             }
 
+            if ( 'plugin-editor.php' === $pagenow ) {
+                $file = isset( $_REQUEST['file'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['file'] ) ) : '';
+                foreach ( self::LOCKED_PLUGIN_SLUGS as $slug ) {
+                    if ( 0 === strpos( $file, $slug . '/' ) ) {
+                        self::die_locked();
+                    }
+                }
+            }
+        }
+
+        /**
+         * Every plugin file named anywhere in the current request —
+         * `plugin` for a single-item action, `checked[]` for a bulk one
+         * (WP_List_Table's standard checkbox field name across every
+         * screen that uses it, not just this one).
+         *
+         * @return string[]
+         */
+        private static function requested_plugin_files() {
+            $targets = array();
+            if ( isset( $_REQUEST['plugin'] ) ) {
+                $targets[] = sanitize_text_field( wp_unslash( $_REQUEST['plugin'] ) );
+            }
+            if ( isset( $_REQUEST['checked'] ) ) {
+                foreach ( (array) wp_unslash( $_REQUEST['checked'] ) as $checked ) {
+                    $targets[] = sanitize_text_field( $checked );
+                }
+            }
+            return $targets;
+        }
+
+        private static function targets_locked_file( $files ) {
+            foreach ( (array) $files as $file ) {
+                if ( in_array( $file, self::LOCKED_PLUGIN_FILES, true ) ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static function die_locked() {
             wp_die(
-                esc_html__( 'KW Security — Plugin Lockout is on: plugins can be viewed here, but can only be activated, deactivated, or otherwise managed through the KW Security Dashboard.', 'kw-security' ),
+                esc_html__( 'KW Security — Plugin Lockout is on: KW Security, KW Performance, and Wordfence can only be managed through the KW Security Dashboard, not from this site directly.', 'kw-security' ),
                 esc_html__( 'Plugin Lockout is on', 'kw-security' ),
                 array( 'response' => 403 )
             );
         }
 
         /**
-         * The Installed Plugins list stays reachable, so — unlike User
-         * Lockout — this can show up right where it's relevant.
+         * The lockout only applies to three specific rows on a page that's
+         * otherwise fully normal, so there's no single relevant screen to
+         * anchor a notice to the way User Lockout can — shown on the main
+         * Dashboard screen instead, same as before.
          */
         public function notice() {
             $screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
-            if ( ! $screen || 'plugins' !== $screen->id ) {
+            if ( ! $screen || 'dashboard' !== $screen->id ) {
                 return;
             }
             echo '<div class="notice notice-info"><p>'
-                . esc_html__( 'KW Security — Plugin Lockout is on: plugins can be viewed here, but can only be installed, activated, deactivated, updated, or removed through the KW Security Dashboard.', 'kw-security' )
+                . esc_html__( 'KW Security — Plugin Lockout is on: KW Security, KW Performance, and Wordfence can only be installed, activated, deactivated, updated, or removed through the KW Security Dashboard. Every other plugin is unaffected.', 'kw-security' )
                 . '</p></div>';
         }
     }

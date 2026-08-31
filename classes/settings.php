@@ -46,6 +46,11 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
         // Dashboard's "Remove" action (see classes/dashboard-visibility.php).
         const DASHBOARD_VISIBILITY_OPTION = 'kw_security_show_in_dashboard';
 
+        // Plugin Lockout auto-relock — see sanitize_features() and
+        // maybe_relock_plugin_lockout() below.
+        const RELOCK_HOOK  = 'kw_security_plugin_lockout_relock';
+        const RELOCK_DELAY = 8 * HOUR_IN_SECONDS;
+
         public function __construct() {
             add_action( 'admin_menu', array( $this, 'register_page' ) );
             add_action( 'admin_init', array( $this, 'register_settings' ) );
@@ -203,7 +208,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'plugin_lockout' => array(
                     'label'       => __( 'Plugin Lockout', 'kw-security' ),
-                    'description' => __( 'Disables managing plugins on this site — even for logged-in Administrators. The Installed Plugins list stays visible in wp-admin, but installing, activating, deactivating, updating, or deleting a plugin from there is blocked. Deleting a plugin isn\'t available from the dashboard either yet, so deactivate instead while this is on. The only way to manage plugins while this is on is through the KW Security Dashboard.', 'kw-security' ),
+                    'description' => __( 'Disables managing KW Security, KW Performance, and Wordfence from this site — even for logged-in Administrators. Every other plugin is unaffected. Turning this off is treated as temporary: it automatically switches back on after 8 hours if left off.', 'kw-security' ),
                 ),
             );
         }
@@ -546,6 +551,13 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
          * @return array<string,bool>
          */
         public function sanitize_features( $input ) {
+            // Read before anything below writes the option — this is the
+            // pre-save value regardless of whether this call came from the
+            // settings page's own Settings API save or from
+            // toggle-feature.php's remote write, since both call this
+            // before their own update_option().
+            $previous = get_option( self::OPTION_NAME, array() );
+
             $defaults = self::get_defaults();
             $clean    = array();
             foreach ( $defaults as $key => $default ) {
@@ -564,7 +576,55 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 );
             }
 
+            self::sync_plugin_lockout_relock( ! empty( $previous['plugin_lockout'] ), $clean['plugin_lockout'] );
+
             return $clean;
+        }
+
+        /**
+         * Plugin Lockout turning off is meant to be a temporary exception,
+         * not a permanent one — schedules a one-off event to turn it back
+         * on 8 hours after it's switched off, clearing any previously
+         * scheduled one first so repeated toggling never stacks duplicates.
+         * Turning it back on (manually, before that fires) just clears the
+         * pending event; maybe_relock_plugin_lockout() below is a no-op if
+         * it fires while already on regardless.
+         */
+        private static function sync_plugin_lockout_relock( $was_locked, $is_locked ) {
+            wp_clear_scheduled_hook( self::RELOCK_HOOK );
+            if ( $was_locked && ! $is_locked ) {
+                wp_schedule_single_event( time() + self::RELOCK_DELAY, self::RELOCK_HOOK );
+            }
+        }
+
+        /**
+         * Cron callback — always registered (see the unconditional
+         * add_action() at the bottom of this file), unlike
+         * KW_Plugin_Lockout itself, which only ever exists while the
+         * toggle is on and so could never receive this while it's exactly
+         * the thing waiting to fire.
+         */
+        public static function maybe_relock_plugin_lockout() {
+            $stored = get_option( self::OPTION_NAME, array() );
+            if ( ! is_array( $stored ) ) {
+                $stored = array();
+            }
+            if ( ! empty( $stored['plugin_lockout'] ) ) {
+                return;
+            }
+            $resolved                   = wp_parse_args( $stored, self::get_defaults() );
+            $resolved['plugin_lockout'] = true;
+            update_option( self::OPTION_NAME, $resolved );
+
+            if ( class_exists( 'KW_Activity_Log' ) ) {
+                KW_Activity_Log::insert( array(
+                    'action'      => 'Enabled',
+                    'object_type' => 'Feature',
+                    'object_name' => 'Plugin Lockout',
+                    'user_id'     => 0,
+                    'user_caps'   => 'system',
+                ) );
+            }
         }
 
         // ----------------------------------------------------------------
@@ -1345,4 +1405,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
     }
 
     new KW_Security_Settings();
+
+    // Unconditional — not inside KW_Plugin_Lockout, which only ever exists
+    // while the toggle is on, exactly the state this needs to fire while
+    // it's not in. See sanitize_features()/maybe_relock_plugin_lockout()
+    // above for what schedules and handles this.
+    add_action( KW_Security_Settings::RELOCK_HOOK, array( 'KW_Security_Settings', 'maybe_relock_plugin_lockout' ) );
 }

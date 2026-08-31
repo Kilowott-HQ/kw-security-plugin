@@ -51,6 +51,40 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.12
+
+### What's new
+- Plugin Lockout now only locks down **KW Security, KW Performance, and
+  Wordfence** — every other plugin can be installed, activated,
+  deactivated, updated, or deleted completely normally while it's on. It
+  previously blocked every plugin on the site.
+- Turning Plugin Lockout off is now temporary: if left off, it
+  automatically switches back on after 8 hours
+
+### Why it matters
+- Locking down the site's own security tooling shouldn't mean losing the
+  ability to manage anything else installed on the site
+- A protection that gets switched off "just for a minute" and then
+  forgotten about isn't protection — an automatic 8-hour limit means it
+  can't be left off indefinitely by accident
+
+### Changed
+- `classes/plugin-lockout.php` no longer strips any WordPress capability
+  (`install_plugins`/`update_plugins`/`delete_plugins`/`edit_plugins`/
+  `activate_plugins` are all whole-site, not per-plugin, so revoking one
+  blocked every plugin, not just the three intended). It now blocks
+  specific requests instead, checking which plugin a request actually
+  names against the three-item locked list, on `plugins.php`,
+  `update.php`, and `plugin-editor.php`. The Add Plugins screen and the
+  Plugin File Editor — both fully inaccessible before — now work
+  normally for anything other than the three locked plugins.
+- `classes/settings.php`'s `sanitize_features()` now detects a
+  Plugin Lockout on→off transition (from either the settings page or a
+  remote dashboard toggle) and schedules a one-off WP-Cron event 8 hours
+  out that turns it back on; turning it back on manually clears the
+  pending event. The resulting Activity Log entry is attributed to
+  "System".
+
 ## 26.08.11
 
 ### What's new
