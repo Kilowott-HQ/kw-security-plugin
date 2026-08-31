@@ -31,8 +31,13 @@ if ( ! class_exists( 'KW_Security_Admin_Users' ) ) {
         const DELETE_API_ROUTE        = '/delete-admin-user';
         const SEND_RESET_API_ROUTE    = '/send-password-reset';
         const SET_PASSWORD_API_ROUTE  = '/set-password';
+        const UPDATE_API_ROUTE        = '/update-admin-user';
         const DASHBOARD_TS_WINDOW     = 300; // seconds — reject stale/replayed requests
         const MIN_PASSWORD_LENGTH     = 12;
+
+        // Same whitelist as create-user.php — kept as its own copy rather
+        // than shared, same reasoning as this file's duplicated public key.
+        const VALID_ROLES = array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' );
 
         // Same keypair as the plugin's other dashboard-triggered endpoints.
         // Safe to publish — verifies signatures, cannot forge them.
@@ -69,6 +74,12 @@ YQIDAQAB
                 'methods'             => WP_REST_Server::CREATABLE,
                 'callback'            => array( __CLASS__, 'handle_set_password_request' ),
                 'permission_callback' => array( __CLASS__, 'authenticate_set_password_request' ),
+            ) );
+
+            register_rest_route( self::DASHBOARD_API_NAMESPACE, self::UPDATE_API_ROUTE, array(
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => array( __CLASS__, 'handle_update_request' ),
+                'permission_callback' => array( __CLASS__, 'authenticate_update_request' ),
             ) );
         }
 
@@ -127,6 +138,8 @@ YQIDAQAB
                     'username'   => $user->user_login,
                     'name'       => $user->display_name,
                     'email'      => $user->user_email,
+                    'first_name' => $user->first_name,
+                    'last_name'  => $user->last_name,
                     'two_factor' => self::get_two_factor_status( $wpdb, (int) $user->ID ),
                     'last_login' => self::get_last_login( $wpdb, (int) $user->ID ),
                 );
@@ -381,6 +394,86 @@ YQIDAQAB
             return new WP_REST_Response( array(
                 'ok'      => true,
                 'message' => 'Password changed for ' . $user->user_login . '.',
+            ), 200 );
+        }
+
+        // ----------------------------------------------------------------
+        // Update an existing administrator's email, name, and role — same
+        // existing-administrator guard as delete/reset above.
+        // ----------------------------------------------------------------
+
+        /**
+         * Every field that determines the resulting account is part of the
+         * signed message, so a captured signature can't be replayed to
+         * apply a different edit.
+         */
+        public static function authenticate_update_request( WP_REST_Request $request ) {
+            $installation_id = sanitize_text_field( (string) $request->get_param( 'installation_id' ) );
+            $user_id          = (int) $request->get_param( 'user_id' );
+            $email            = (string) $request->get_param( 'email' );
+            $first_name       = (string) $request->get_param( 'first_name' );
+            $last_name        = (string) $request->get_param( 'last_name' );
+            $role             = (string) $request->get_param( 'role' );
+            $timestamp        = (int) $request->get_param( 'timestamp' );
+
+            if ( ! $installation_id || ! $user_id || '' === $email || '' === $role ) {
+                return new WP_Error( 'bad_request', 'Forbidden.', array( 'status' => 403 ) );
+            }
+            if ( ! class_exists( 'KW_Security_Telemetry' ) || $installation_id !== KW_Security_Telemetry::get_site_id() ) {
+                return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
+            }
+
+            $message = $installation_id . '|update-admin-user|' . $user_id . '|' . $email . '|' . $first_name . '|' . $last_name . '|' . $role . '|' . $timestamp;
+            return self::verify_signature( $request, $message );
+        }
+
+        public static function handle_update_request( WP_REST_Request $request ) {
+            $user = self::get_target_admin( (int) $request->get_param( 'user_id' ) );
+            if ( ! $user ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => 'User not found, or is not an administrator.' ), 404 );
+            }
+
+            $email      = sanitize_email( (string) $request->get_param( 'email' ) );
+            $first_name = sanitize_text_field( (string) $request->get_param( 'first_name' ) );
+            $last_name  = sanitize_text_field( (string) $request->get_param( 'last_name' ) );
+            $role       = sanitize_key( (string) $request->get_param( 'role' ) );
+
+            if ( ! is_email( $email ) ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => 'That email address is not valid.' ), 400 );
+            }
+            if ( ! in_array( $role, self::VALID_ROLES, true ) ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => 'That role is not valid.' ), 400 );
+            }
+            $existing_id = email_exists( $email );
+            if ( $existing_id && (int) $existing_id !== $user->ID ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => 'That email address is already in use on this site.' ), 409 );
+            }
+
+            // Attribute the resulting Activity Log "Updated" entry to the
+            // dashboard role behind this request instead of "Guest" — see
+            // KW_Security_Dashboard_Actor in mu-plugins/kw-security-activator.php.
+            // wp_update_user() fires the same profile_update hook a normal
+            // profile save does, so no separate KW_Activity_Log::insert()
+            // call is needed here.
+            if ( class_exists( 'KW_Security_Dashboard_Actor' ) ) {
+                KW_Security_Dashboard_Actor::set( $request->get_param( 'actor_role' ) );
+            }
+
+            $result = wp_update_user( array(
+                'ID'         => $user->ID,
+                'user_email' => $email,
+                'first_name' => $first_name,
+                'last_name'  => $last_name,
+                'role'       => $role,
+            ) );
+
+            if ( is_wp_error( $result ) ) {
+                return new WP_REST_Response( array( 'ok' => false, 'message' => $result->get_error_message() ), 500 );
+            }
+
+            return new WP_REST_Response( array(
+                'ok'       => true,
+                'username' => $user->user_login,
             ), 200 );
         }
 

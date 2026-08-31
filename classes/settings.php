@@ -198,7 +198,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'user_lockout' => array(
                     'label'       => __( 'User Lockout', 'kw-security' ),
-                    'description' => __( 'Disables creating new WordPress users on this site entirely — even for logged-in Administrators, via wp-admin or the REST API. The only way to add a user while this is on is through the KW Security Dashboard\'s own Add User page.', 'kw-security' ),
+                    'description' => __( 'Disables adding, editing, or deleting WordPress users on this site entirely — even for logged-in Administrators, via wp-admin or the REST API. The Edit, Delete, Send password reset, View, and Login Security row actions on the Users screen are all removed. The only way to manage users while this is on is through the KW Security Dashboard.', 'kw-security' ),
                 ),
             );
         }

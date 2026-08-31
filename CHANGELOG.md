@@ -57,18 +57,22 @@ automatically, so add the heading for the version you are about to release.
 - The dashboard's one-click "WP admin" login now automatically signs out
   after 8 hours, instead of staying signed in for up to two weeks
 - New **User Lockout** toggle (Settings → KW Security → Login & Access, or
-  from the dashboard) — once on, no new WordPress user can be created on
-  this site directly, not even by an existing Administrator
-- Admin Users has an **Add User** page on the dashboard — create a real
-  WordPress user, with a role, on any site without logging into it
+  from the dashboard) — once on, WordPress users on this site can only be
+  added, edited, or removed through the KW Security Dashboard, not even by
+  an existing Administrator in wp-admin
+- Admin Users on the dashboard has an **Edit** action (email, name, role)
+  and an **Add User** page — manage a site's WordPress users, with a role,
+  without logging into it
 
 ### Why it matters
 - A one-click login left that account signed in for up to two weeks even
   after the person who requested it closed the tab — an 8-hour cap limits
   how long that access window stays open
 - If an admin login is ever compromised, User Lockout stops the intruder
-  from planting a second, durable admin account as a backdoor
-- Adding a user previously meant logging into that site's wp-admin
+  from renaming, deleting, resetting the password on, or managing 2FA for
+  any account, or planting a new one, as a durable backdoor
+- Adding or editing a user previously meant logging into that site's
+  wp-admin
 
 ### Changed
 - `wp_set_auth_cookie( $user_id, true )` for the "KW Security Dashboard"
@@ -77,18 +81,27 @@ automatically, so add the heading for the version you are about to release.
   filter now caps that account's session at 8 hours regardless — every
   other user is unaffected, and no cron or scheduled event is involved:
   WordPress itself checks the stored expiration on every request.
-- `on_user_register()` in `classes/activity-log.php` now attributes a
-  dashboard-created user's "Registered" entry to the acting dashboard role
-  (e.g. "SuperAdmin (KW SECURITY DASH)") instead of "Guest", the same way
-  plugin activate/deactivate already does.
+- `on_user_register()` and `on_profile_update()` in `classes/activity-log.php`
+  now attribute a dashboard-created or dashboard-edited user's log entry to
+  the acting dashboard role (e.g. "SuperAdmin (KW SECURITY DASH)") instead
+  of "Guest", the same way plugin activate/deactivate already does.
 
 ### New
 - `user_lockout` feature key. `classes/user-lockout.php` strips the
-  `create_users` capability from every user via `map_meta_cap()` when
-  enabled — this single filter closes wp-admin's Add New User screen, the
-  Users list's "Add New" button, and the REST `POST /wp/v2/users` endpoint
-  all at once, since all three gate on that one capability. Shows an info
-  notice on the Users list screen explaining why.
+  `create_users`, `edit_users`, and `delete_users` capabilities from every
+  user via `map_meta_cap()` when enabled — one filter closes wp-admin's Add
+  New User screen, the Edit/Delete/Send password reset row actions and
+  bulk actions on the Users list, and the equivalent REST endpoints, since
+  all of them gate on one of those three capabilities. (Editing your own
+  profile is unaffected — WordPress never requires `edit_users` for that.)
+  The Users list's "View" row action and any "Login Security" action a
+  plugin like Wordfence adds to the same row aren't gated by a capability
+  in core, so both are removed directly. Shows an info notice on the Users
+  list screen explaining why.
+- `POST /wp-json/kw-security/v1/update-admin-user` (`classes/admin-users.php`)
+  — updates an existing administrator's email, name, and role via
+  `wp_update_user()` directly, so it is unaffected by User Lockout. Same
+  role whitelist and email-conflict check as user creation.
 - `POST /wp-json/kw-security/v1/create-user` (`classes/create-user.php`) —
   creates a user via `wp_insert_user()` directly, so it is unaffected by
   User Lockout. Validates the role against a fixed whitelist (Administrator,

@@ -254,12 +254,14 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
 
         public function on_profile_update( $user_id, $old_data ) {
             $user = get_userdata( $user_id );
-            self::insert( array(
+            $args = array(
                 'action'      => 'Updated',
                 'object_type' => 'User',
                 'object_name' => $user ? $user->user_login : (string) $user_id,
                 'object_id'   => $user_id,
-            ) );
+            );
+            self::attribute_dashboard_actor( $args );
+            self::insert( $args );
         }
 
         public function on_password_reset( $user ) {
