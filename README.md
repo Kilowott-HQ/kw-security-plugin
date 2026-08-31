@@ -18,6 +18,10 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 🔁 **GitHub Update Notifications**: Surfaces new releases on the WordPress Updates screen
 - 🔧 **Maintenance API**: Read-only REST endpoint for the Kilowott maintenance agent to query site health (WP/PHP version, plugin update status), gated by a Bearer key
 - 🌐 **Nginx Upload Protection**: Server-aware file security — skips the ineffective `.htaccess` on Nginx/OpenResty and shows an admin notice with the equivalent Nginx location block
+- 🔌 **Remote Plugin Control**: Activate, deactivate, or update any installed plugin — not just this one — from the KW Security Dashboard, without logging into the site
+- 🔑 **One-Click Admin Login**: The dashboard can log an admin straight into wp-admin via a single-use, 60-second token for a dedicated "KW Security Dashboard" account — no password needed, and it's recorded in the Activity Log
+- ✉️ **Dashboard-Triggered Password Reset**: Send the standard reset-link email, or set a new password directly, for any admin account — from the dashboard
+- 🕵️ **Dashboard Actor Attribution**: Plugin or Wordfence activation/deactivation triggered from the dashboard is attributed to the responsible dashboard role in the Activity Log (e.g. "SuperAdmin (KW SECURITY DASH)") instead of showing as "Guest"
 - ⚙️ **Feature Toggles**: Every feature can be enabled or disabled per site from **Settings → KW Security**
 
 ## Installation
@@ -49,7 +53,7 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
 | Maintenance API | ON | Read-only REST endpoint (`/wp-json/kw-security/v1/site-status`) used by the Kilowott maintenance agent; gated by `Authorization: Bearer <key>`, rate-limited to 20 req/hour |
 | Activity Log | ON | Records security-relevant events (logins, failed logins, plugin/theme/core changes, post edits, media uploads, settings saves) to a database log viewable at Settings → Activity Log; 90-day retention with daily cleanup |
-| Slack Security Alerts | ON | Forwards **critical security events** (brute-force lockouts, admin privilege changes, blocked malicious uploads, file-integrity anomalies, disabled defenses) to a Slack channel via an Incoming Webhook. Also reports **updates available for KW Security or Wordfence** — with the release notes, so the team can see what the update contains — and **activation/deactivation of either plugin**. Per-site, queued and flushed on shutdown, de-duplicated. Inert until a webhook URL is set — via Settings → KW Security or the `KW_SLACK_WEBHOOK_URL` constant/environment variable. Choose which categories to send per site |
+| Slack Security Alerts | ON | Forwards **critical security events** (brute-force lockouts, admin privilege changes, blocked malicious uploads, file-integrity anomalies, disabled defenses) to a Slack channel via an Incoming Webhook. Also reports **updates available for KW Security or Wordfence** — with the release notes, so the team can see what the update contains — and **activation/deactivation of either plugin**. Per-site, queued and flushed on shutdown, de-duplicated. Inert until a webhook URL is set — via Settings → KW Security or the `KW_SLACK_WEBHOOK_URL` constant/environment variable. The channel is identified by a Channel ID (from the channel's Slack details panel → Copy channel ID), used to build the "View Channel" link. Both the webhook and Channel ID can also be set remotely from the Security Dashboard. Choose which categories to send per site |
 
 > **About "Hide Login URL":** Disabled by default because changing the login URL is a disruptive change that requires bookmarking a custom URL. Enable only when ready, and configure the slug in the same Settings → KW Security page before saving.
 
@@ -92,22 +96,44 @@ When a feature is disabled, **none of its hooks are registered** — there is ze
 ### File Structure
 ```
 kw-security/
-├── kw-security.php                      # Main plugin file & autoloader
+├── kw-security.php                       # Main plugin file & autoloader
 ├── classes/
-│   ├── settings.php                    # Feature toggle UI + is_enabled() helper
-│   ├── class-kw-security.php           # Core security class (gated by toggles)
-│   ├── hide-login-url.php              # Custom login URL routing
-│   ├── security-headers.php            # HTTP security headers
-│   ├── user-enumeration.php            # Block user enumeration
-│   ├── login-rate-limiter.php          # Failed-login IP lockout
-│   ├── file-integrity.php              # Daily root-dir scan + email alerts
-│   ├── password-policy.php             # Strong password enforcement (admin role)
-│   ├── class-kw-maintenance-api.php    # Maintenance REST API (site-status + set-key endpoints)
-│   ├── activity-log.php                # Activity log (event recording + admin list table)
-│   └── updater.php                     # GitHub-based update checker
+│   ├── class-kw-security.php             # Core security class (gated by toggles)
+│   ├── settings.php                      # Feature toggle UI + is_enabled() helper
+│   │                                      # Site-facing hardening features:
+│   ├── security-headers.php              #   HTTP security headers
+│   ├── hide-login-url.php                #   Custom login URL routing
+│   ├── user-enumeration.php              #   Block user enumeration + author-URL redirects
+│   ├── login-rate-limiter.php            #   Failed-login IP lockout
+│   ├── file-integrity.php                #   Daily root-dir scan + email alerts
+│   ├── password-policy.php               #   Strong password enforcement (admin role)
+│   │                                      # Activity logging & alerting:
+│   ├── activity-log.php                  #   Activity log (event recording + admin list table)
+│   ├── security-alerts.php               #   Slack alert categories, queueing, and delivery
+│   ├── wordfence-integration.php         #   Parses Wordfence's own alert emails to avoid double-alerting
+│   ├── telemetry.php                     #   Heartbeat ping to the Security Dashboard + update-info lookup
+│   │                                      # Security Dashboard remote-action endpoints (signed, per-installation):
+│   ├── toggle-feature.php                #   Enable/disable a feature toggle remotely
+│   ├── plugin-toggle.php                 #   Activate/deactivate any installed plugin remotely
+│   ├── plugin-file-update.php            #   Update any installed plugin remotely
+│   ├── update-trigger.php                #   Force-check + install a KW Security update remotely
+│   ├── plugin-list.php                   #   Reports installed plugins + update status (read-only)
+│   ├── refresh-heartbeat.php             #   On-demand heartbeat (bypasses WP-Cron)
+│   ├── slack-webhook-set.php             #   Set this site's Slack webhook + Channel ID remotely
+│   ├── admin-users.php                   #   Lists WP admins; dashboard-triggered password reset/delete
+│   ├── dashboard-login.php               #   One-click WP admin login (single-use token)
+│   ├── dashboard-visibility.php          #   Backs the dashboard's "Remove"/resume toggle (telemetry opt-out)
+│   │                                      # Update checking & maintenance:
+│   ├── updater.php                       #   GitHub-based update checker (PUC)
+│   ├── class-kw-maintenance-api.php      #   Read-only REST API for the Kilowott maintenance agent
+│   └── mu-loader.php                     #   Deploys the mu-plugin below into wp-content/mu-plugins/
+├── mu-plugins/
+│   └── kw-security-activator.php         # Always-loaded (see mu-loader.php above): tracks which
+│                                          # dashboard role triggered the current request, for Activity
+│                                          # Log attribution, and consumes one-click login tokens
 ├── vendor/
-│   └── plugin-update-checker/          # PUC v5.6 library (vendored)
-└── README.md                           # This file
+│   └── plugin-update-checker/            # PUC v5.6 library (vendored)
+└── README.md                             # This file
 ```
 
 ### Constants Defined
