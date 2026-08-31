@@ -78,6 +78,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'disable_author_url' => true,
                 'hide_login_url'    => false,
                 'maintenance_api'   => true,
+                'user_lockout'      => false,
             );
         }
 
@@ -194,6 +195,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'maintenance_api' => array(
                     'label'       => __( 'Maintenance API', 'kw-security' ),
                     'description' => __( 'Exposes a read-only REST endpoint (<code>/wp-json/kw-security/v1/site-status</code>) used by the Kilowott maintenance agent to fetch WordPress version, PHP version, and plugin update status. Enabled by default — the endpoint requires a Bearer key and is rate-limited to 20 req/hour.', 'kw-security' ),
+                ),
+                'user_lockout' => array(
+                    'label'       => __( 'User Lockout', 'kw-security' ),
+                    'description' => __( 'Disables creating new WordPress users on this site entirely — even for logged-in Administrators, via wp-admin or the REST API. The only way to add a user while this is on is through the KW Security Dashboard\'s own Add User page.', 'kw-security' ),
                 ),
             );
         }
@@ -1122,7 +1127,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
             return array(
                 'login' => array(
                     'label'    => __( 'Login & Access', 'kw-security' ),
-                    'features' => array( 'hide_login_url', 'login_rate_limit', 'user_enumeration', 'disable_author_url', 'password_policy' ),
+                    'features' => array( 'hide_login_url', 'login_rate_limit', 'user_enumeration', 'disable_author_url', 'password_policy', 'user_lockout' ),
                 ),
                 'files' => array(
                     'label'    => __( 'Files & Integrity', 'kw-security' ),

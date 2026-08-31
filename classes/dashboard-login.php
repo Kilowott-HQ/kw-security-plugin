@@ -34,6 +34,7 @@ if (!class_exists('KW_Security_Dashboard_Login')) {
         const TOKEN_TTL      = 60;  // seconds — the issued login link's own lifetime
         const OPTION_USER_ID = 'kw_security_dashboard_user_id';
         const QUERY_VAR      = 'kw_security_login';
+        const SESSION_TTL    = 8 * HOUR_IN_SECONDS; // this account is never left logged in longer than this
 
         // Same keypair as the plugin's other dashboard-triggered endpoints —
         // same trust boundary, but a different signed message shape, so a
@@ -212,6 +213,24 @@ YQIDAQAB
             wp_safe_redirect(admin_url());
             exit;
         }
+
+        /**
+         * Caps the KW Security Dashboard account's session at SESSION_TTL
+         * (8 hours), regardless of the $remember=true passed to
+         * wp_set_auth_cookie() above (which otherwise means WordPress's
+         * normal 14-day "remember me" length). WordPress stores this
+         * filtered value as the session's own expiration and checks it on
+         * every request (wp_validate_auth_cookie()), so the account is
+         * treated as logged out the moment it elapses — no cron or
+         * scheduled event needed. Every other user is unaffected.
+         */
+        public static function cap_session_length($length, $user_id, $remember) {
+            $dashboard_user_id = (int) get_option(self::OPTION_USER_ID);
+            if ($dashboard_user_id && (int) $user_id === $dashboard_user_id) {
+                return self::SESSION_TTL;
+            }
+            return $length;
+        }
     }
 
     add_action('rest_api_init', array('KW_Security_Dashboard_Login', 'init'));
@@ -223,4 +242,9 @@ YQIDAQAB
     // page load, not a REST request — so this needs its own top-level
     // hook on the init action that fires for every request.
     add_action('init', array('KW_Security_Dashboard_Login', 'maybe_consume_login_token'));
+
+    // Registered unconditionally (not just around the wp_set_auth_cookie()
+    // call above) so the cap applies no matter what triggers a session for
+    // this account, present or future.
+    add_filter('auth_cookie_expiration', array('KW_Security_Dashboard_Login', 'cap_session_length'), 10, 3);
 }

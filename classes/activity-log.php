@@ -221,12 +221,14 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
 
         public function on_user_register( $user_id ) {
             $user = get_userdata( $user_id );
-            self::insert( array(
+            $args = array(
                 'action'      => 'Registered',
                 'object_type' => 'User',
                 'object_name' => $user ? $user->user_login : '',
                 'object_id'   => $user_id,
-            ) );
+            );
+            self::attribute_dashboard_actor( $args );
+            self::insert( $args );
         }
 
         public function on_delete_user( $user_id ) {

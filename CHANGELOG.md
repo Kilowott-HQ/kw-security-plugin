@@ -51,6 +51,53 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.09
+
+### What's new
+- The dashboard's one-click "WP admin" login now automatically signs out
+  after 8 hours, instead of staying signed in for up to two weeks
+- New **User Lockout** toggle (Settings → KW Security → Login & Access, or
+  from the dashboard) — once on, no new WordPress user can be created on
+  this site directly, not even by an existing Administrator
+- Admin Users has an **Add User** page on the dashboard — create a real
+  WordPress user, with a role, on any site without logging into it
+
+### Why it matters
+- A one-click login left that account signed in for up to two weeks even
+  after the person who requested it closed the tab — an 8-hour cap limits
+  how long that access window stays open
+- If an admin login is ever compromised, User Lockout stops the intruder
+  from planting a second, durable admin account as a backdoor
+- Adding a user previously meant logging into that site's wp-admin
+
+### Changed
+- `wp_set_auth_cookie( $user_id, true )` for the "KW Security Dashboard"
+  account (`classes/dashboard-login.php`) previously meant WordPress's
+  normal 14-day "remember me" session length. An `auth_cookie_expiration`
+  filter now caps that account's session at 8 hours regardless — every
+  other user is unaffected, and no cron or scheduled event is involved:
+  WordPress itself checks the stored expiration on every request.
+- `on_user_register()` in `classes/activity-log.php` now attributes a
+  dashboard-created user's "Registered" entry to the acting dashboard role
+  (e.g. "SuperAdmin (KW SECURITY DASH)") instead of "Guest", the same way
+  plugin activate/deactivate already does.
+
+### New
+- `user_lockout` feature key. `classes/user-lockout.php` strips the
+  `create_users` capability from every user via `map_meta_cap()` when
+  enabled — this single filter closes wp-admin's Add New User screen, the
+  Users list's "Add New" button, and the REST `POST /wp/v2/users` endpoint
+  all at once, since all three gate on that one capability. Shows an info
+  notice on the Users list screen explaining why.
+- `POST /wp-json/kw-security/v1/create-user` (`classes/create-user.php`) —
+  creates a user via `wp_insert_user()` directly, so it is unaffected by
+  User Lockout. Validates the role against a fixed whitelist (Administrator,
+  Editor, Author, Contributor, Subscriber), rejects a password under 12
+  characters, and checks `username_exists()` / `email_exists()` first for a
+  clear conflict message instead of a generic failure. Optionally fires
+  WordPress's own `wp_new_user_notification()` to email the new user a
+  password-reset link.
+
 ## 26.08.08
 
 ### What's new
