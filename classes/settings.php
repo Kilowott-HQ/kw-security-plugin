@@ -203,7 +203,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'plugin_lockout' => array(
                     'label'       => __( 'Plugin Lockout', 'kw-security' ),
-                    'description' => __( 'Disables managing plugins on this site entirely — even for logged-in Administrators. Since WordPress ties viewing and managing plugins to the same permission, the whole Plugins screen disappears from wp-admin while this is on, not just the install/activate/update/delete actions. Deleting a plugin isn\'t available from the dashboard either yet, so deactivate instead while this is on. The only way to manage plugins while this is on is through the KW Security Dashboard.', 'kw-security' ),
+                    'description' => __( 'Disables managing plugins on this site — even for logged-in Administrators. The Installed Plugins list stays visible in wp-admin, but installing, activating, deactivating, updating, or deleting a plugin from there is blocked. Deleting a plugin isn\'t available from the dashboard either yet, so deactivate instead while this is on. The only way to manage plugins while this is on is through the KW Security Dashboard.', 'kw-security' ),
                 ),
             );
         }

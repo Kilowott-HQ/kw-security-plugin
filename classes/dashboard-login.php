@@ -103,13 +103,23 @@ YQIDAQAB
         public static function handle(WP_REST_Request $request) {
             require_once ABSPATH . 'wp-admin/includes/user.php';
 
+            // Set before get_or_create_dashboard_user() below, not after —
+            // that call itself creates the "KW Security Dashboard" account
+            // (wp_insert_user(), firing user_register) the very first time
+            // any site sees this flow, and activity-log.php's
+            // on_user_register() only attributes correctly if the actor is
+            // already known by the time that fires.
+            $actor_role = sanitize_key((string) $request->get_param('actor_role'));
+            if (class_exists('KW_Security_Dashboard_Actor')) {
+                KW_Security_Dashboard_Actor::set($actor_role);
+            }
+
             $user_id = self::get_or_create_dashboard_user();
             if (is_wp_error($user_id)) {
                 return new WP_REST_Response(array('ok' => false, 'message' => $user_id->get_error_message()), 500);
             }
 
-            $actor_role = sanitize_key((string) $request->get_param('actor_role'));
-            $token      = bin2hex(random_bytes(32));
+            $token = bin2hex(random_bytes(32));
             set_transient(
                 'kw_security_login_' . $token,
                 array('user_id' => $user_id, 'role' => $actor_role),

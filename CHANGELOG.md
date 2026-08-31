@@ -51,6 +51,37 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.11
+
+### What's new
+- Plugin Lockout now leaves the Installed Plugins list visible in
+  wp-admin — only installing, activating, deactivating, updating, and
+  deleting a plugin from there is blocked. It previously hid the whole
+  Plugins screen instead.
+- The one-click "WP admin" login now correctly attributes the very first
+  sign-in on a site (which also creates the dashboard's own account
+  there) to the acting dashboard role in the Activity Log, instead of
+  "Guest"
+
+### Why it matters
+- Site owners still need to see what's installed even while locked down
+  — only the ability to change anything needed to be blocked
+- "Guest" gave no way to tell that first sign-in apart from a real
+  anonymous visitor
+
+### Changed
+- WordPress ties viewing wp-admin's Plugins screen to the same
+  permission as activating/deactivating a plugin — there's no way to
+  grant one without the other. Activate/deactivate are now blocked by
+  rejecting the request itself (and hiding the Activate/Deactivate/Delete
+  links) rather than by revoking that permission outright, the way
+  Install/Update/Delete/Edit still are. See `classes/plugin-lockout.php`.
+- `classes/dashboard-login.php` now records the acting dashboard role
+  before creating the site's "KW Security Dashboard" account, not after
+  — that account is only ever created once, on a site's very first
+  one-click login, and the old order meant that one specific event could
+  never be attributed correctly.
+
 ## 26.08.10
 
 ### What's new
@@ -74,12 +105,16 @@ automatically, so add the heading for the version you are about to release.
   legitimate dashboard action
 
 ### Changed
-- Turning Plugin Lockout on hides the entire "Plugins" menu in wp-admin,
-  not just the install/update/delete actions — WordPress ties viewing and
-  managing plugins to the same permission, so there's no way to leave the
-  list visible while blocking changes the way User Lockout does for
-  Users. Deleting a plugin isn't available from the dashboard yet either,
-  so deactivate instead while this is on.
+- The Installed Plugins list stays visible in wp-admin while Plugin
+  Lockout is on — only installing, activating, deactivating, updating,
+  and deleting are blocked. WordPress ties viewing the list to the same
+  permission as activating/deactivating a plugin, so that specific pair
+  is enforced by rejecting the request itself (and hiding the
+  Activate/Deactivate links) rather than by a capability alone; install,
+  update, and delete each have their own separate capability and are
+  blocked the same way User Lockout blocks things — by revoking it
+  outright. Deleting a plugin isn't available from the dashboard yet
+  either, so deactivate instead while this is on.
 - `on_upgrader_complete()` in `classes/activity-log.php` now attributes a
   dashboard-triggered plugin install/update to the acting dashboard role,
   same as plugin activate/deactivate already does. `classes/update-trigger.php`
@@ -87,8 +122,12 @@ automatically, so add the heading for the version you are about to release.
 
 ### New
 - `plugin_lockout` feature key. `classes/plugin-lockout.php` strips
-  `install_plugins`, `activate_plugins`, `update_plugins`,
-  `delete_plugins`, and `edit_plugins` via `map_meta_cap()` when enabled.
+  `install_plugins`, `update_plugins`, `delete_plugins`, and
+  `edit_plugins` via `map_meta_cap()`. Activate/deactivate are blocked
+  separately: an `admin_init` hook rejects any plugins.php request other
+  than a plain page view before plugins.php's own handler runs, and the
+  Activate/Deactivate/Delete row links and the bulk-actions dropdown
+  entries are hidden so there's nothing clickable that would hit it.
 - `POST /wp-json/kw-security/v1/install-plugin` (`classes/plugin-install.php`)
   — resolves the download link itself from wordpress.org via the plugin
   slug (never trusts a URL from the dashboard), installs via
