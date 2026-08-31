@@ -401,12 +401,14 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                 }
                 foreach ( array_unique( array_filter( $slugs ) ) as $plugin ) {
                     $data = get_plugin_data( WP_PLUGIN_DIR . '/' . $plugin );
-                    self::insert( array(
+                    $args = array(
                         'action'         => 'install' === $action ? 'Installed' : 'Updated',
                         'object_type'    => 'Plugin',
                         'object_subtype' => $plugin,
                         'object_name'    => ! empty( $data['Name'] ) ? $data['Name'] : $plugin,
-                    ) );
+                    );
+                    self::attribute_dashboard_actor( $args );
+                    self::insert( $args );
                 }
             } elseif ( 'theme' === $type ) {
                 $slugs = isset( $hook_extra['themes'] ) ? (array) $hook_extra['themes'] : array();

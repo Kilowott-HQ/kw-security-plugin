@@ -106,6 +106,13 @@ YQIDAQAB
             $from_version = defined('KW_SECURITY_VERSION') ? KW_SECURITY_VERSION : null;
             $plugin_file_relative = plugin_basename($plugin_file);
 
+            // Attribute the resulting Activity Log "Updated" entry to the
+            // dashboard role behind this request instead of "Guest" — same
+            // pattern plugin-toggle.php already uses.
+            if (class_exists('KW_Security_Dashboard_Actor')) {
+                KW_Security_Dashboard_Actor::set($request->get_param('actor_role'));
+            }
+
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
             require_once ABSPATH . 'wp-admin/includes/file.php';
             require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';

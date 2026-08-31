@@ -109,6 +109,13 @@ YQIDAQAB
 
             $from_version = isset($installed[$plugin_file]['Version']) ? $installed[$plugin_file]['Version'] : null;
 
+            // Attribute the resulting Activity Log "Updated" entry to the
+            // dashboard role behind this request instead of "Guest" — same
+            // pattern plugin-toggle.php already uses.
+            if (class_exists('KW_Security_Dashboard_Actor')) {
+                KW_Security_Dashboard_Actor::set($request->get_param('actor_role'));
+            }
+
             // WordPress's own generic update check — refreshes the
             // update_plugins transient for every installed plugin via
             // whatever update source each one is registered with (wp.org,

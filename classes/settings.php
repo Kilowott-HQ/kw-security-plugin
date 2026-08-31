@@ -79,6 +79,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'hide_login_url'    => false,
                 'maintenance_api'   => true,
                 'user_lockout'      => false,
+                'plugin_lockout'    => false,
             );
         }
 
@@ -199,6 +200,10 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 'user_lockout' => array(
                     'label'       => __( 'User Lockout', 'kw-security' ),
                     'description' => __( 'Disables adding, editing, or deleting WordPress users on this site entirely — even for logged-in Administrators, via wp-admin or the REST API. The Edit, Delete, Send password reset, View, and Login Security row actions on the Users screen are all removed. The only way to manage users while this is on is through the KW Security Dashboard.', 'kw-security' ),
+                ),
+                'plugin_lockout' => array(
+                    'label'       => __( 'Plugin Lockout', 'kw-security' ),
+                    'description' => __( 'Disables managing plugins on this site entirely — even for logged-in Administrators. Since WordPress ties viewing and managing plugins to the same permission, the whole Plugins screen disappears from wp-admin while this is on, not just the install/activate/update/delete actions. Deleting a plugin isn\'t available from the dashboard either yet, so deactivate instead while this is on. The only way to manage plugins while this is on is through the KW Security Dashboard.', 'kw-security' ),
                 ),
             );
         }
@@ -1135,7 +1140,7 @@ if ( ! class_exists( 'KW_Security_Settings' ) ) {
                 ),
                 'hardening' => array(
                     'label'    => __( 'Hardening', 'kw-security' ),
-                    'features' => array( 'comments', 'xmlrpc_pingback', 'security_headers', 'update_management' ),
+                    'features' => array( 'comments', 'xmlrpc_pingback', 'security_headers', 'update_management', 'plugin_lockout' ),
                 ),
                 'alerts' => array(
                     'label'    => __( 'Alerts & Integrations', 'kw-security' ),

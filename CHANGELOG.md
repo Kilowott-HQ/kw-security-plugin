@@ -51,6 +51,50 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.08.10
+
+### What's new
+- New **Plugin Lockout** toggle (Settings → KW Security → Hardening, or
+  from the dashboard) — once on, plugins on this site can only be
+  installed, activated, deactivated, or updated through the KW Security
+  Dashboard, not even by an existing Administrator
+- Installed Plugins on the dashboard has an **Add Plugin** page
+  (SuperAdmin only) — install a real plugin from wordpress.org's own
+  "most used" list, or search for one by name, without logging into the
+  site
+- Dashboard-triggered plugin updates now show who actually did it in the
+  Activity Log instead of "Guest"
+
+### Why it matters
+- If an admin login is ever compromised, Plugin Lockout stops the
+  intruder from installing a malicious plugin or disabling security
+  plugins from wp-admin
+- Adding a plugin previously meant logging into that site's wp-admin
+- "Guest" gave no way to tell a real anonymous event apart from a
+  legitimate dashboard action
+
+### Changed
+- Turning Plugin Lockout on hides the entire "Plugins" menu in wp-admin,
+  not just the install/update/delete actions — WordPress ties viewing and
+  managing plugins to the same permission, so there's no way to leave the
+  list visible while blocking changes the way User Lockout does for
+  Users. Deleting a plugin isn't available from the dashboard yet either,
+  so deactivate instead while this is on.
+- `on_upgrader_complete()` in `classes/activity-log.php` now attributes a
+  dashboard-triggered plugin install/update to the acting dashboard role,
+  same as plugin activate/deactivate already does. `classes/update-trigger.php`
+  and `classes/plugin-file-update.php` now pass that role through.
+
+### New
+- `plugin_lockout` feature key. `classes/plugin-lockout.php` strips
+  `install_plugins`, `activate_plugins`, `update_plugins`,
+  `delete_plugins`, and `edit_plugins` via `map_meta_cap()` when enabled.
+- `POST /wp-json/kw-security/v1/install-plugin` (`classes/plugin-install.php`)
+  — resolves the download link itself from wordpress.org via the plugin
+  slug (never trusts a URL from the dashboard), installs via
+  `Plugin_Upgrader`, and activates it — the same sequence wp-admin's own
+  Add Plugins screen uses.
+
 ## 26.08.09
 
 ### What's new
