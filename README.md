@@ -15,13 +15,16 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 💬 **Comment Security**: Disables comments, pingbacks, and trackbacks
 - 📁 **File Security**: Prevents dangerous file uploads and disables file editing
 - 📋 **Activity Log**: Records logins, failed logins, plugin/theme changes, post edits, media uploads, and settings changes to a searchable, filterable log at **Settings → Activity Log**
-- 🔁 **GitHub Update Notifications**: Surfaces new releases on the WordPress Updates screen
+- 🔁 **Update Notifications**: Surfaces new releases on the WordPress Updates screen, served from Kilowott's own update server rather than the GitHub Releases API
 - 🔧 **Maintenance API**: Read-only REST endpoint for the Kilowott maintenance agent to query site health (WP/PHP version, plugin update status), gated by a Bearer key
 - 🌐 **Nginx Upload Protection**: Server-aware file security — skips the ineffective `.htaccess` on Nginx/OpenResty and shows an admin notice with the equivalent Nginx location block
-- 🔌 **Remote Plugin Control**: Activate, deactivate, or update any installed plugin — not just this one — from the KW Security Dashboard, without logging into the site
-- 🔑 **One-Click Admin Login**: The dashboard can log an admin straight into wp-admin via a single-use, 60-second token for a dedicated "KW Security Dashboard" account — no password needed, and it's recorded in the Activity Log
+- 🔌 **Remote Plugin Control**: Install (from wordpress.org), activate, deactivate, or update any installed plugin — not just this one — from the KW Security Dashboard, without logging into the site
+- 🔒 **Plugin Lockout**: Blocks installing, activating, deactivating, updating, or deleting KW Security, KW Performance, and Wordfence specifically from wp-admin — every other plugin is unaffected. Turning it off is temporary: it automatically re-enables after 8 hours if left off
+- 👥 **Remote User Management**: Add a new WordPress user, or edit an existing admin's email/name/role, from the KW Security Dashboard, without logging into the site
+- 🔒 **User Lockout**: Blocks adding, editing, or deleting WordPress users from wp-admin or the REST API entirely — even for a logged-in Administrator. The only way to manage users while it's on is through the dashboard
+- 🔑 **One-Click Admin Login**: The dashboard can log an admin straight into wp-admin via a single-use, 60-second token for a dedicated "KW Security Dashboard" account — no password needed, recorded in the Activity Log, and capped at an 8-hour session regardless of how long the tab stays open
 - ✉️ **Dashboard-Triggered Password Reset**: Send the standard reset-link email, or set a new password directly, for any admin account — from the dashboard
-- 🕵️ **Dashboard Actor Attribution**: Plugin or Wordfence activation/deactivation triggered from the dashboard is attributed to the responsible dashboard role in the Activity Log (e.g. "SuperAdmin (KW SECURITY DASH)") instead of showing as "Guest"
+- 🕵️ **Dashboard Actor Attribution**: Plugin/Wordfence activation, deactivation, updates, and user creation/edits triggered from the dashboard are attributed to the responsible dashboard role in the Activity Log (e.g. "SuperAdmin (KW SECURITY DASH)") instead of showing as "Guest"
 - ⚙️ **Feature Toggles**: Every feature can be enabled or disabled per site from **Settings → KW Security**
 
 ## Installation
@@ -51,6 +54,8 @@ Defaults: all features enabled, except **Hide Login URL** (opt-in, off by defaul
 | File Integrity Monitoring | ON | Daily WP-Cron scan; emails admin on unknown PHP in root or modified `index.php` / `wp-config.php` |
 | Strong Password Policy (Admins) | ON | Requires 12+ chars with upper, lower, digit, and symbol when creating/updating administrator passwords |
 | Hide Login URL | **OFF** | Custom login slug; replaces `/wp-login.php` and `/wp-admin` |
+| User Lockout | **OFF** | Blocks adding, editing, or deleting WordPress users — even for logged-in Administrators, via wp-admin or the REST API. Removes the Edit, Delete, Send password reset, View, and Login Security row actions on the Users screen. The only way to manage users while this is on is through the KW Security Dashboard |
+| Plugin Lockout | **OFF** | Blocks installing, activating, deactivating, updating, or deleting KW Security, KW Performance, and Wordfence specifically — even for logged-in Administrators. Every other plugin is unaffected. Turning this off is temporary: it automatically switches back on after 8 hours if left off |
 | Maintenance API | ON | Read-only REST endpoint (`/wp-json/kw-security/v1/site-status`) used by the Kilowott maintenance agent; gated by `Authorization: Bearer <key>`, rate-limited to 20 req/hour |
 | Activity Log | ON | Records security-relevant events (logins, failed logins, plugin/theme/core changes, post edits, media uploads, settings saves) to a database log viewable at Settings → Activity Log; 90-day retention with daily cleanup |
 | Slack Security Alerts | ON | Forwards **critical security events** (brute-force lockouts, admin privilege changes, blocked malicious uploads, file-integrity anomalies, disabled defenses) to a Slack channel via an Incoming Webhook. Also reports **updates available for KW Security or Wordfence** — with the release notes, so the team can see what the update contains — and **activation/deactivation of either plugin**. Per-site, queued and flushed on shutdown, de-duplicated. Inert until a webhook URL is set — via Settings → KW Security or the `KW_SLACK_WEBHOOK_URL` constant/environment variable. The channel is identified by a Channel ID (from the channel's Slack details panel → Copy channel ID), used to build the "View Channel" link. Both the webhook and Channel ID can also be set remotely from the Security Dashboard. Choose which categories to send per site |
@@ -99,7 +104,7 @@ kw-security/
 ├── kw-security.php                       # Main plugin file & autoloader
 ├── classes/
 │   ├── class-kw-security.php             # Core security class (gated by toggles)
-│   ├── settings.php                      # Feature toggle UI + is_enabled() helper
+│   ├── settings.php                      # Feature toggle UI + is_enabled() helper; Plugin Lockout's 8-hour auto-relock cron
 │   │                                      # Site-facing hardening features:
 │   ├── security-headers.php              #   HTTP security headers
 │   ├── hide-login-url.php                #   Custom login URL routing
@@ -107,6 +112,8 @@ kw-security/
 │   ├── login-rate-limiter.php            #   Failed-login IP lockout
 │   ├── file-integrity.php                #   Daily root-dir scan + email alerts
 │   ├── password-policy.php               #   Strong password enforcement (admin role)
+│   ├── user-lockout.php                  #   Blocks add/edit/delete of WordPress users from wp-admin/REST
+│   ├── plugin-lockout.php                #   Blocks managing KW Security/KW Performance/Wordfence from wp-admin
 │   │                                      # Activity logging & alerting:
 │   ├── activity-log.php                  #   Activity log (event recording + admin list table)
 │   ├── security-alerts.php               #   Slack alert categories, queueing, and delivery
@@ -116,15 +123,17 @@ kw-security/
 │   ├── toggle-feature.php                #   Enable/disable a feature toggle remotely
 │   ├── plugin-toggle.php                 #   Activate/deactivate any installed plugin remotely
 │   ├── plugin-file-update.php            #   Update any installed plugin remotely
+│   ├── plugin-install.php                #   Install a plugin from wordpress.org and activate it
 │   ├── update-trigger.php                #   Force-check + install a KW Security update remotely
 │   ├── plugin-list.php                   #   Reports installed plugins + update status (read-only)
 │   ├── refresh-heartbeat.php             #   On-demand heartbeat (bypasses WP-Cron)
 │   ├── slack-webhook-set.php             #   Set this site's Slack webhook + Channel ID remotely
-│   ├── admin-users.php                   #   Lists WP admins; dashboard-triggered password reset/delete
-│   ├── dashboard-login.php               #   One-click WP admin login (single-use token)
+│   ├── admin-users.php                   #   Lists WP admins; dashboard-triggered edit/password reset/delete
+│   ├── create-user.php                   #   Create a new WordPress user remotely
+│   ├── dashboard-login.php               #   One-click WP admin login (single-use token, 8-hour session cap)
 │   ├── dashboard-visibility.php          #   Backs the dashboard's "Remove"/resume toggle (telemetry opt-out)
 │   │                                      # Update checking & maintenance:
-│   ├── updater.php                       #   GitHub-based update checker (PUC)
+│   ├── updater.php                       #   Update checker (PUC) reading Kilowott's own update server
 │   ├── class-kw-maintenance-api.php      #   Read-only REST API for the Kilowott maintenance agent
 │   └── mu-loader.php                     #   Deploys the mu-plugin below into wp-content/mu-plugins/
 ├── mu-plugins/
@@ -244,8 +253,16 @@ Extend the `init_hooks()` method to add additional security measures.
 
 Releases run from the **Release** workflow (Actions tab → Release → *Run workflow*).
 It lints every PHP file, bumps the version in `kw-security.php`, builds the zip with
-the correct `kw-security/` root folder, tags, publishes the GitHub release, and
-announces it in Slack. There is nothing to build or upload by hand.
+the correct `kw-security/` root folder, generates `info.json` (the update metadata
+PUC reads), deploys both to Kilowott's own update server over SSH and verifies the
+live checksum matches what was just uploaded, tags, publishes the GitHub release,
+and announces it in Slack. There is nothing to build or upload by hand.
+
+Updates are served from that update server, not the GitHub Releases API — see
+`classes/updater.php`'s own docblock for why. `KW_UPDATE_SERVER` (default
+`https://updates.kwrk.in/kw-security`, overridable from `wp-config.php` for staging)
+is where a site actually checks; the GitHub release/tag is still created for the
+changelog and Slack announcement, but a site never talks to GitHub to update.
 
 ### Step 1 — Write the changelog entry
 
