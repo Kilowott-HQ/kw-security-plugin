@@ -51,6 +51,29 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.09.01
+
+### What's new
+- Plugin updates now come from Kilowott's own update server instead of GitHub.
+- Nothing changes for site owners: updates still appear on the WordPress
+  Updates screen and install exactly as before.
+
+### Why it matters
+- The plugin's source can now be kept private without any site losing the
+  ability to receive updates or security fixes.
+- One fewer outside service sits between us and a site getting patched.
+
+### Changed
+- Update checks, the dashboard's update action, and the Slack update alert now
+  read from the update server rather than the GitHub Releases API.
+- The update endpoint can be overridden per site, for staging.
+- The release process uploads the build to the update server and verifies the
+  live endpoint — version, checksum, and lockdown rules — before finishing.
+
+### New
+- The distribution directory serves only the update metadata and the plugin
+  package. Nothing else in it is reachable or executable.
+
 ## 26.08.12
 
 ### What's new
