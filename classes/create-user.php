@@ -19,6 +19,14 @@
  * affected by User Lockout's map_meta_cap() filter — that filter only
  * strips the create_users capability, and wp_insert_user() never checks
  * capabilities at all.
+ *
+ * No password ever crosses the wire. The account gets a random password
+ * generated here, on the site, that nobody — not the dashboard, not the
+ * admin creating the account — ever sees, same convention as the one-click
+ * WP admin login's own dedicated account. Whoever the notification email
+ * goes to has to set their own password via its reset link before they can
+ * sign in either way, so asking someone to type one in on the dashboard
+ * first only made the flow look like it needed a password when it doesn't.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -29,10 +37,9 @@ if ( ! class_exists( 'KW_Security_Create_User' ) ) {
 
     class KW_Security_Create_User {
 
-        const API_NAMESPACE      = 'kw-security/v1';
-        const ROUTE               = '/create-user';
-        const TS_WINDOW           = 300; // seconds — reject stale/replayed requests
-        const MIN_PASSWORD_LENGTH = 12;  // same precedent as admin-users.php's set-password
+        const API_NAMESPACE = 'kw-security/v1';
+        const ROUTE          = '/create-user';
+        const TS_WINDOW      = 300; // seconds — reject stale/replayed requests
 
         const VALID_ROLES = array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' );
 
@@ -74,12 +81,11 @@ YQIDAQAB
             $username         = (string) $request->get_param( 'username' );
             $email            = (string) $request->get_param( 'email' );
             $role             = (string) $request->get_param( 'role' );
-            $new_password     = (string) $request->get_param( 'new_password' );
             $notify_param     = $request->get_param( 'send_notification' );
             $timestamp        = (int) $request->get_param( 'timestamp' );
             $signature        = (string) $request->get_param( 'signature' );
 
-            if ( ! $installation_id || '' === $username || '' === $email || '' === $role || '' === $new_password || null === $notify_param || ! $timestamp || ! $signature ) {
+            if ( ! $installation_id || '' === $username || '' === $email || '' === $role || null === $notify_param || ! $timestamp || ! $signature ) {
                 return new WP_Error( 'bad_request', 'Forbidden.', array( 'status' => 403 ) );
             }
 
@@ -92,7 +98,7 @@ YQIDAQAB
             }
 
             $notify    = self::to_bool( $notify_param );
-            $message   = $installation_id . '|create-user|' . $username . '|' . $email . '|' . $role . '|' . $new_password . '|' . ( $notify ? '1' : '0' ) . '|' . $timestamp;
+            $message   = $installation_id . '|create-user|' . $username . '|' . $email . '|' . $role . '|' . ( $notify ? '1' : '0' ) . '|' . $timestamp;
             $sig_bytes = base64_decode( $signature, true );
             if ( false === $sig_bytes ) {
                 return new WP_Error( 'forbidden', 'Forbidden.', array( 'status' => 403 ) );
@@ -110,7 +116,6 @@ YQIDAQAB
             $username   = sanitize_user( (string) $request->get_param( 'username' ), true );
             $email      = sanitize_email( (string) $request->get_param( 'email' ) );
             $role       = sanitize_key( (string) $request->get_param( 'role' ) );
-            $password   = (string) $request->get_param( 'new_password' );
             $first_name = sanitize_text_field( (string) $request->get_param( 'first_name' ) );
             $last_name  = sanitize_text_field( (string) $request->get_param( 'last_name' ) );
             $website    = (string) $request->get_param( 'website' );
@@ -125,12 +130,6 @@ YQIDAQAB
             if ( ! in_array( $role, self::VALID_ROLES, true ) ) {
                 return new WP_REST_Response( array( 'ok' => false, 'message' => 'That role is not valid.' ), 400 );
             }
-            if ( strlen( $password ) < self::MIN_PASSWORD_LENGTH ) {
-                return new WP_REST_Response( array(
-                    'ok'      => false,
-                    'message' => 'Password must be at least ' . self::MIN_PASSWORD_LENGTH . ' characters.',
-                ), 400 );
-            }
             if ( username_exists( $username ) ) {
                 return new WP_REST_Response( array( 'ok' => false, 'message' => 'That username already exists on this site.' ), 409 );
             }
@@ -141,7 +140,15 @@ YQIDAQAB
             $userdata = array(
                 'user_login' => $username,
                 'user_email' => $email,
-                'user_pass'  => $password,
+                // Random and discarded immediately after this call returns —
+                // nobody, including us, ever learns it. The account is only
+                // ever meant to be signed into after its owner sets their own
+                // password via the notification email's reset link (or a
+                // manual "forgot password" if send_notification was off), so
+                // shipping a password over the wire from the dashboard just
+                // to have it get overwritten was pure noise — worse, it read
+                // as a real credential to whoever set it there.
+                'user_pass'  => wp_generate_password( 32, true, true ),
                 'role'       => $role,
                 'first_name' => $first_name,
                 'last_name'  => $last_name,

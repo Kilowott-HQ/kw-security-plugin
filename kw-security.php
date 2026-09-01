@@ -58,6 +58,20 @@ cQo6ScfVo5YV81giSkyfhiMaFLGOEP2NQ0DQo11BkKuyA0O3piLQcrPyTYxNXMbl
 nQIDAQAB
 -----END PUBLIC KEY-----');
 
+// Sent as a bearer token on first registration with the Security Dashboard
+// (classes/telemetry.php's register()). This repository is public, so this
+// is not a secret in the usual sense — anyone can read it here — its job
+// is only to stop the registration endpoint being blindly scannable by
+// something that hasn't at least gone to the trouble of reading the
+// plugin source. Actual protection against a captured value is on the
+// dashboard's side: registration only ever creates a new installation
+// row and never overwrites an existing one's site_url or API key, so
+// knowing this value plus an existing installation_id still isn't enough
+// to take over that site's registration.
+if (!defined('KW_REGISTER_SHARED_SECRET')) {
+    define('KW_REGISTER_SHARED_SECRET', 'a1f9c3e7-8b2d-4f6a-9c1e-5d7b3a8f2c4e');
+}
+
 register_activation_hook(__FILE__, array('KW_Security', 'plugin_activation'));
 register_deactivation_hook(__FILE__, array('KW_Security', 'plugin_deactivation'));
 

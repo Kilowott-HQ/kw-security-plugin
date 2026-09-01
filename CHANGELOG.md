@@ -51,6 +51,36 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.09.02
+
+### What's new
+- Creating a user from the dashboard's Add User page no longer asks for a
+  password up front.
+- First-time registration with the Security Dashboard now identifies itself
+  with a shared key, matching a change already live on the dashboard's side.
+
+### Why it matters
+- The new-user account still emails the person a link to set their own
+  password before they can sign in, so asking someone to type one into the
+  dashboard first was an extra step for a value that got thrown away as soon
+  as that link was used. Removing it also means no password ever has to
+  travel from the dashboard to the site at all.
+- The dashboard's registration endpoint now requires this key on every
+  request. Without this update, a site activating KW Security for the first
+  time cannot complete registration at all — this closes that gap. Sites
+  that registered before this change are unaffected; registration only
+  happens once per site.
+
+### Changed
+- `create-user`'s signed request no longer carries a password. The account's
+  actual password is generated on the site itself and is never returned or
+  logged anywhere.
+- The Add User page's "Send this user login details by email" checkbox is
+  now labelled "Email this user a link to set their password", matching what
+  it actually sends.
+- Registration now sends an `Authorization: Bearer` header alongside its
+  existing signed payload.
+
 ## 26.09.01
 
 ### What's new

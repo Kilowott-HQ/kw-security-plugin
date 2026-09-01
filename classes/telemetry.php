@@ -76,7 +76,10 @@ if (!defined('ABSPATH')) {
             $response = wp_remote_post(self::API_BASE_URL . '/v1/installations/register', array(
                 'timeout'   => 10,
                 'sslverify' => true,
-                'headers'   => array('Content-Type' => 'application/json'),
+                'headers'   => array(
+                    'Content-Type'  => 'application/json',
+                    'Authorization' => 'Bearer ' . KW_REGISTER_SHARED_SECRET,
+                ),
                 'body'      => wp_json_encode(array(
                     'installation_id' => self::get_site_id(),
                     'site_url'        => home_url(),
