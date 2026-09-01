@@ -465,6 +465,12 @@ jobs:
                       elif li:
                           flush_para()
                           items.append(inline(li.group(1)))
+                      elif items and raw[:1] in (' ', '\t'):
+                          # An indented line directly under a bullet is that
+                          # bullet wrapping, not a new paragraph. Without this
+                          # a wrapped bullet split into a <li> plus an orphan
+                          # <p>, mid-sentence, in the "View details" modal.
+                          items[-1] += ' ' + inline(line)
                       else:
                           flush_list()
                           para.append(line)
