@@ -1492,7 +1492,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             }
 
             if ( 'kw-security/kw-security.php' === $file ) {
-                $sections = $this->fetch_github_release_notes( $version );
+                $sections = $this->fetch_own_release_notes( $version );
             } else {
                 $sections = array( "What's new" => $this->fetch_wporg_changelog( $file, $version ) );
             }
@@ -1510,11 +1510,19 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
-         * KW Security's own release notes, from the GitHub Releases API for the
-         * matching tag. The repository is public, so this needs no credentials.
+         * KW Security's own release notes, from the update server's info.json.
          *
-         * The release body leads with the plain-language "What's new" / "Why it
-         * matters" sections and keeps the technical changelog in a collapsed
+         * Distinct from fetch_release_notes() above, which is the dispatcher
+         * for any watched plugin; this is the branch it takes for KW Security
+         * itself, where the notes come from our endpoint rather than wp.org.
+         *
+         * This used to read the GitHub Releases API, which worked only while
+         * the repository was public. It is now the same document PUC reads for
+         * update metadata, so the notes and the version on offer can never
+         * disagree.
+         *
+         * The notes lead with the plain-language "What's new" / "Why it
+         * matters" sections and keep the technical changelog in a collapsed
          * <details> block underneath; everything from that marker on is cut,
          * since the audience for this alert is the same non-technical audience
          * the summary was written for.
@@ -1522,17 +1530,17 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
          * @param string $version
          * @return array<string,string>
          */
-        private function fetch_github_release_notes( $version ) {
+        private function fetch_own_release_notes( $version ) {
             $url = apply_filters(
                 'kw_slack_release_notes_url',
-                'https://api.github.com/repos/Kilowott-HQ/kw-security-plugin/releases/tags/' . rawurlencode( $version ),
+                KW_UPDATE_METADATA_URL,
                 $version
             );
 
             $response = wp_remote_get( $url, array(
                 'timeout' => 5,
                 'headers' => array(
-                    'Accept'     => 'application/vnd.github+json',
+                    'Accept'     => 'application/json',
                     'User-Agent' => 'kw-security/' . KW_SECURITY_VERSION,
                 ),
             ) );
@@ -1542,11 +1550,33 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
             }
 
             $data = json_decode( wp_remote_retrieve_body( $response ), true );
-            if ( ! is_array( $data ) || empty( $data['body'] ) ) {
+            if ( ! is_array( $data ) ) {
                 return array();
             }
 
-            $body = (string) $data['body'];
+            // info.json only ever describes the current release. If this alert
+            // is for a different version — a site catching up from several
+            // releases back, or a release published while this request was in
+            // flight — the notes on hand describe someone else's release.
+            // Sending nothing is better than sending the wrong changelog.
+            if ( isset( $data['version'] ) && (string) $data['version'] !== (string) $version ) {
+                return array();
+            }
+
+            // 'release_notes' is what the update server publishes. 'body' is
+            // the shape the GitHub Releases API returned, kept so a site whose
+            // filter still points at GitHub kept working.
+            $body = '';
+            foreach ( array( 'release_notes', 'body' ) as $key ) {
+                if ( ! empty( $data[ $key ] ) ) {
+                    $body = (string) $data[ $key ];
+                    break;
+                }
+            }
+
+            if ( '' === $body ) {
+                return array();
+            }
 
             // Cut the collapsed technical block and the footer.
             foreach ( array( '<details', "\n---" ) as $marker ) {

@@ -1,0 +1,56 @@
+# KW Security update endpoint — static distribution only.
+#
+# Deployed to <docroot>/kw-security/.htaccess by .github/workflows/release.yml.
+# Source of truth is deploy/kw-security.htaccess in the plugin repo; edit it
+# there, not on the server, or the next release will overwrite your change.
+#
+# This directory serves exactly two files to WordPress installs in the field:
+#   info.json          — PUC update metadata
+#   kw-security.zip    — the release artifact
+#
+# The policy is a whitelist, not a blacklist. An earlier version tried to
+# disable PHP with RemoveHandler, which does NOT work here: cPanel's
+# EA4-generated public_html/.htaccess sets
+#     AddHandler application/x-httpd-ea-php82 .php .php8 .phtml
+# in the parent directory, and that wins. cPanel regenerates that file, so
+# any fix that depends on its contents is one MultiPHP change away from
+# silently breaking. Denying by default and granting two exact filenames
+# does not care how the handler is configured — authorization is evaluated
+# before the handler ever runs.
+
+Options -Indexes
+
+# Default: nothing in this directory is reachable over HTTP.
+# This covers .htaccess, stray uploads, backup copies left by a failed
+# deploy, and anything an attacker manages to drop here.
+Require all denied
+
+# The only two exceptions.
+<FilesMatch "^(info\.json|kw-security\.zip)$">
+    Require all granted
+</FilesMatch>
+
+# Belt and braces: even if the rules above are ever relaxed, these
+# extensions must never be handed to an interpreter.
+<FilesMatch "\.(php|php[0-9]*|phtml|phar|cgi|pl|py|sh|inc)$">
+    SetHandler default-handler
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_mime.c>
+    AddType application/json .json
+    AddType application/zip  .zip
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Metadata must stay fresh — sites poll it every 12h to learn about
+    # a new version. The zip is immutable for a given release, so it can
+    # cache hard.
+    <FilesMatch "^info\.json$">
+        Header set Cache-Control "public, max-age=300, must-revalidate"
+    </FilesMatch>
+    <FilesMatch "\.zip$">
+        Header set Cache-Control "public, max-age=86400"
+    </FilesMatch>
+    Header set X-Content-Type-Options "nosniff"
+</IfModule>

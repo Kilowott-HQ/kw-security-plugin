@@ -374,6 +374,7 @@ jobs:
             --exclude=".DS_Store" \
             --exclude="node_modules" \
             --exclude="*.zip" \
+            --exclude="deploy" \
             ./ "$STAGE/kw-security/"
 
           cd "$STAGE"
@@ -383,11 +384,149 @@ jobs:
           echo "Top-level contents:"
           unzip -l "$GITHUB_WORKSPACE/kw-security.zip" | head -20
 
+      - name: Generate info.json (update server metadata)
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # PUC's self-hosted mode reads this document instead of the GitHub
+          # Releases API. It is generated here, from the same inputs as the
+          # release body, so the notes a site is shown and the version it is
+          # offered can never drift apart.
+          python3 - <<'PY'
+          import json, os, re, pathlib, datetime, hashlib
+
+          v   = os.environ['V']
+          src = pathlib.Path('kw-security.php').read_text(encoding='utf-8', errors='replace')
+
+          def header(name, default=''):
+              m = re.search(r'^\s*%s:\s*(.+)$' % re.escape(name), src, re.M)
+              return m.group(1).strip() if m else default
+
+          tmp   = pathlib.Path(os.environ['RUNNER_TEMP'])
+          notes = ''
+          if (tmp / 'notes.md').exists():
+              notes = (tmp / 'notes.md').read_text(encoding='utf-8')
+
+          # Minimal markdown -> HTML for the "View details" modal. Deliberately
+          # not a general converter: the only input is our own release notes,
+          # whose shape is fixed by CHANGELOG.md. It works on blank-line
+          # separated blocks so a paragraph wrapped across several source lines
+          # stays one <p>, and so a list becomes one <ul>.
+          def inline(t):
+              t = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', t)
+              t = re.sub(r'`([^`]+)`', r'<code>\1</code>', t)
+              t = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', t)
+              return t
+
+          def to_html(md):
+              out, para, items = [], [], []
+
+              def flush_para():
+                  if para:
+                      # Join first: a paragraph wrapped across several source
+                      # lines is one paragraph, not one <p> per line.
+                      out.append('<p>%s</p>' % inline(' '.join(para)))
+                      para.clear()
+
+              def flush_list():
+                  if items:
+                      out.append('<ul>%s</ul>'
+                                 % ''.join('<li>%s</li>' % i for i in items))
+                      items.clear()
+
+              def flush():
+                  flush_list()
+                  flush_para()
+
+              for raw in md.strip().splitlines():
+                  line = raw.strip()
+
+                  if line == '':
+                      flush()
+                  elif line.startswith('<'):
+                      # The notes embed real HTML (<details>, <summary>) on
+                      # purpose. Wrapping those in <p> produces broken markup.
+                      flush()
+                      out.append(line)
+                  elif re.match(r'^(-{3,}|\*{3,}|_{3,})$', line):
+                      # Checked before the list rule: '---' is a rule, '- x'
+                      # is an item, and only the latter has trailing space.
+                      flush()
+                      out.append('<hr>')
+                  else:
+                      h = re.match(r'^(#{1,6})\s+(.*)$', line)
+                      li = re.match(r'^[-*]\s+(.*)$', line)
+                      if h:
+                          flush()
+                          lvl = min(len(h.group(1)) + 2, 6)
+                          out.append('<h%d>%s</h%d>'
+                                     % (lvl, inline(h.group(2).strip()), lvl))
+                      elif li:
+                          flush_para()
+                          items.append(inline(li.group(1)))
+                      else:
+                          flush_list()
+                          para.append(line)
+
+              flush()
+              return '\n'.join(out)
+
+          zip_path = pathlib.Path('kw-security.zip')
+          sha256   = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+          # Single source of truth: the endpoint the shipped plugin actually
+          # polls. Hard-coding it here too would let the two drift, and the
+          # failure would be silent — sites would keep polling the old URL
+          # while releases landed on the new one.
+          m = re.search(r"define\(\s*'KW_UPDATE_SERVER'\s*,\s*'([^']+)'\s*\)", src)
+          if not m:
+              raise SystemExit('KW_UPDATE_SERVER not found in kw-security.php')
+          base = m.group(1).rstrip('/')
+
+          info = {
+              'name':            'KW Security',
+              'slug':            'kw-security',
+              'version':         v,
+              'download_url':    base + '/kw-security.zip',
+              'homepage':        header('Plugin URI', 'https://kilowott.com/'),
+              'requires':        header('Requires at least', '5.0'),
+              'tested':          header('Tested up to', ''),
+              'author':          '<a href="https://kilowott.com/">KW Development</a>',
+              'author_homepage': 'https://kilowott.com/',
+              'last_updated':    datetime.datetime.now(datetime.timezone.utc)
+                                     .strftime('%Y-%m-%d %H:%M:%S'),
+              # Raw markdown, read by KW_Security_Alerts::fetch_own_release_notes()
+              # for the Slack update alert. Same text the GitHub release body has.
+              'release_notes':   notes,
+              # Integrity reference. Nothing verifies this yet; it is recorded so
+              # a tampered artifact can be detected after the fact.
+              'zip_sha256':      sha256,
+              'sections': {
+                  'changelog': to_html(notes),
+              },
+          }
+
+          pathlib.Path('info.json').write_text(
+              json.dumps(info, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+          print('info.json for %s (zip sha256 %s)' % (v, sha256[:16]))
+
+          # Hand the endpoint to later steps rather than repeating the literal.
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as fh:
+              fh.write('UPDATE_BASE_URL=%s\n' % base)
+          PY
+
+          echo "--- info.json ---"
+          cat info.json
+          python3 -c "import json;json.load(open('info.json'));print('valid JSON')"
+
       - name: Upload zip as workflow artifact (for dry-run inspection)
         uses: actions/upload-artifact@v4
         with:
           name: kw-security-${{ steps.version.outputs.version }}
-          path: kw-security.zip
+          path: |
+            kw-security.zip
+            info.json
           retention-days: 14
 
       - name: Note that the announcement was skipped
@@ -456,6 +595,124 @@ jobs:
               "kw-security.zip"
           fi
           echo "::notice::Release $V published. PUC-enabled sites will see the update on their next poll (~12h)."
+
+      # This is the step that actually ships. Everything above it produces
+      # artifacts and records; until these files land on the update server, no
+      # site in the field can see the release.
+      #
+      # It runs AFTER the tag and GitHub Release so that anything reachable by
+      # a client site is guaranteed to have a corresponding tag to audit. If
+      # this step fails, the tag and release exist but nothing was distributed
+      # — re-run the workflow with the same version to retry the upload.
+      - name: Deploy to update server
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST:    ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER:    ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH:    ${{ secrets.DEPLOY_PATH }}
+          V:              ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          KEY="$RUNNER_TEMP/deploy_key"
+          KNOWN="$RUNNER_TEMP/known_hosts"
+          # Remove the private key even if a later command fails.
+          trap 'rm -f "$KEY"' EXIT
+
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+
+          # Host key is PINNED, not discovered with ssh-keyscan. Fetching it at
+          # deploy time would trust whatever answers on port 22, which defeats
+          # the point on the one channel that pushes executable code to every
+          # client site. If the VPS is rebuilt, this line must be updated and
+          # the new key verified out of band — a failure here is the control
+          # working, not a bug to route around.
+          echo '65.254.80.95 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKrWk3SSpsM8frBVq+tAwkQ3iUZXTQx3ffNCdgS31cHv' > "$KNOWN"
+
+          SSHOPTS="-i $KEY -o UserKnownHostsFile=$KNOWN -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20"
+          REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
+
+          # Upload order is load-bearing. info.json is what advertises the new
+          # version, so it goes LAST — publishing it first would point sites at
+          # a download that is still the previous release, or absent entirely.
+          # Each file lands under a temporary name and is then moved into place,
+          # so a site polling mid-deploy never sees a half-written file.
+
+          echo "Uploading artifact..."
+          scp $SSHOPTS kw-security.zip "$REMOTE:$DEPLOY_PATH/.kw-security.zip.new"
+
+          echo "Uploading server config..."
+          scp $SSHOPTS deploy/kw-security.htaccess "$REMOTE:$DEPLOY_PATH/.htaccess"
+
+          echo "Promoting artifact, then metadata..."
+          scp $SSHOPTS info.json "$REMOTE:$DEPLOY_PATH/.info.json.new"
+          ssh $SSHOPTS "$REMOTE" "
+            set -e
+            cd '$DEPLOY_PATH'
+            mv .kw-security.zip.new kw-security.zip
+            mv .info.json.new info.json
+            chmod 644 kw-security.zip info.json .htaccess
+            ls -la
+          "
+
+          echo "::notice::Deployed $V to the update server."
+
+      - name: Verify the published endpoint
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BASE="$UPDATE_BASE_URL"   # exported by the info.json step
+
+          # A release that published but did not actually become reachable is
+          # the failure mode worth catching here: sites would keep polling and
+          # silently stay on the old version. Assert the endpoint really is
+          # serving what we just built, rather than trusting the upload.
+
+          echo "Fetching info.json..."
+          curl -fsS --max-time 30 "$BASE/info.json" -o served.json
+          SERVED=$(python3 -c "import json;print(json.load(open('served.json'))['version'])")
+          if [ "$SERVED" != "$V" ]; then
+            echo "::error::Endpoint serves version '$SERVED' but this release is '$V'."
+            exit 1
+          fi
+          echo "info.json reports $SERVED"
+
+          echo "Downloading artifact..."
+          curl -fsS --max-time 120 "$BASE/kw-security.zip" -o served.zip
+          EXPECT=$(python3 -c "import json;print(json.load(open('served.json'))['zip_sha256'])")
+          ACTUAL=$(sha256sum served.zip | cut -d" " -f1)
+          if [ "$EXPECT" != "$ACTUAL" ]; then
+            echo "::error::Served zip does not match the checksum in info.json."
+            echo "  expected $EXPECT"
+            echo "  actual   $ACTUAL"
+            exit 1
+          fi
+          echo "artifact checksum matches"
+
+          # The zip must unpack to a folder named exactly "kw-security" or WP
+          # installs the update into the wrong directory and the site ends up
+          # with two copies of the plugin.
+          if ! unzip -l served.zip | grep -qE " kw-security/"; then
+            echo "::error::Served zip does not have a kw-security/ root folder."
+            exit 1
+          fi
+
+          # The hardening rules must be live. Without them the directory is
+          # browsable and dropped PHP executes.
+          for path in "" ".htaccess"; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$BASE/$path")
+            if [ "$CODE" != "403" ]; then
+              echo "::error::Expected 403 for '$BASE/$path', got $CODE. Check .htaccess."
+              exit 1
+            fi
+          done
+          echo "endpoint hardening verified"
+
+          echo "::notice::Endpoint verified: $BASE serving $V."
 
       # Announcement is best-effort: continue-on-error means a Slack outage or a
       # misconfigured webhook never fails an otherwise-successful release. It

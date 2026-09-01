@@ -24,6 +24,22 @@ define('KW_SECURITY_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('KW_SECURITY_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('KW_SECURITY_PLUGIN_FILE', __FILE__);
 
+// Update server. The plugin repository is private, so releases are served as
+// static files from Kilowott infrastructure instead of the GitHub Releases
+// API: info.json is the update metadata document PUC reads, kw-security.zip
+// is the artifact it downloads.
+//
+// Both are overridable from wp-config.php, so a staging site can be pointed
+// at a different endpoint without editing the plugin. Anything reading these
+// must tolerate the endpoint being unreachable — an update check that fails
+// is an inconvenience, but a fatal here would take the site down.
+if (!defined('KW_UPDATE_SERVER')) {
+    define('KW_UPDATE_SERVER', 'https://updates.kwrk.in/kw-security');
+}
+if (!defined('KW_UPDATE_METADATA_URL')) {
+    define('KW_UPDATE_METADATA_URL', KW_UPDATE_SERVER . '/info.json');
+}
+
 // Phase 6-WP: auto-registration.
 // KW_DISCOVERY_URL points to the Kilowott registration endpoint discovery doc.
 // Returns { register_url, version } so the endpoint can move without a plugin update.

@@ -125,11 +125,11 @@ if (!defined('ABSPATH')) {
                 if (!class_exists('YahnisElsts\PluginUpdateChecker\v5\PucFactory')) {
                     require_once KW_SECURITY_PLUGIN_DIR . 'vendor/plugin-update-checker/load-v5p6.php';
                 }
-                // Same repo/slug as classes/updater.php and
+                // Same endpoint/slug as classes/updater.php and
                 // classes/update-trigger.php — this just forces an
                 // immediate check instead of waiting for PUC's own schedule.
                 $checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
-                    'https://github.com/Kilowott-HQ/kw-security-plugin/',
+                    KW_UPDATE_METADATA_URL,
                     KW_SECURITY_PLUGIN_FILE,
                     'kw-security'
                 );

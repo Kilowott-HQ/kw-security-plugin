@@ -121,10 +121,10 @@ YQIDAQAB
                 require_once KW_SECURITY_PLUGIN_DIR . 'vendor/plugin-update-checker/load-v5p6.php';
             }
 
-            // Same repo/slug as classes/updater.php — this just forces an
+            // Same endpoint/slug as classes/updater.php — this just forces an
             // immediate check instead of waiting for PUC's own schedule.
             $checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
-                'https://github.com/Kilowott-HQ/kw-security-plugin/',
+                KW_UPDATE_METADATA_URL,
                 $plugin_file,
                 'kw-security'
             );
