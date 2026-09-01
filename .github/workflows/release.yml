@@ -571,45 +571,24 @@ jobs:
             git push origin main
           fi
 
-      - name: Create and push tag
-        if: ${{ github.event.inputs.dry_run != 'true' }}
-        run: |
-          set -euo pipefail
-          V="${{ steps.version.outputs.version }}"
-          git tag "$V"
-          git push origin "$V"
-
-      - name: Create GitHub Release with zip asset
-        if: ${{ github.event.inputs.dry_run != 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          V="${{ steps.version.outputs.version }}"
-          # Body was assembled by the "Compose release notes" step: plain-language
-          # WHAT/WHY on top, technical detail collapsed underneath. The plugin
-          # reads this back to show "what's new" in its own update alert.
-          if [ -s "$RUNNER_TEMP/notes.md" ]; then
-            gh release create "$V" \
-              --title "$V" \
-              --notes-file "$RUNNER_TEMP/notes.md" \
-              "kw-security.zip"
-          else
-            gh release create "$V" \
-              --title "$V" \
-              --generate-notes \
-              "kw-security.zip"
-          fi
-          echo "::notice::Release $V published. PUC-enabled sites will see the update on their next poll (~12h)."
-
       # This is the step that actually ships. Everything above it produces
       # artifacts and records; until these files land on the update server, no
       # site in the field can see the release.
       #
-      # It runs AFTER the tag and GitHub Release so that anything reachable by
-      # a client site is guaranteed to have a corresponding tag to audit. If
-      # this step fails, the tag and release exist but nothing was distributed
-      # — re-run the workflow with the same version to retry the upload.
+      # It runs BEFORE the tag and GitHub Release so that a failure here leaves
+      # nothing tagged and nothing published, and the whole workflow can simply
+      # be re-run at the same version. That matters because "Resolve version"
+      # refuses to reuse an existing tag: with the tag already pushed, a failed
+      # deploy could not be retried at that version at all, and would have to be
+      # fixed by hand or by burning a version number.
+      #
+      # The version bump commit above is already safe to re-run — it skips the
+      # commit when kw-security.php is at the target version.
+      #
+      # The residual risk is inverted: a tag or release failure after a
+      # successful deploy leaves sites able to download a version with no tag.
+      # That is both far less likely than an SSH or firewall failure here, and
+      # trivially repaired by tagging by hand.
       - name: Deploy to update server
         if: ${{ github.event.inputs.dry_run != 'true' }}
         env:
@@ -649,14 +628,22 @@ jobs:
           echo "Uploading artifact..."
           scp $SSHOPTS kw-security.zip "$REMOTE:$DEPLOY_PATH/.kw-security.zip.new"
 
+          # .htaccess goes via a temporary name like the other two. scp
+          # truncates the destination and then streams into it, and Apache
+          # re-reads .htaccess on every request, so writing straight over the
+          # live path means a failed transfer can leave a partial file serving
+          # traffic. Truncated in the wrong place it drops "Require all denied"
+          # while the directory still serves — which is the exact hole that let
+          # dropped PHP execute here before.
           echo "Uploading server config..."
-          scp $SSHOPTS deploy/kw-security.htaccess "$REMOTE:$DEPLOY_PATH/.htaccess"
+          scp $SSHOPTS deploy/kw-security.htaccess "$REMOTE:$DEPLOY_PATH/.htaccess.new"
 
           echo "Promoting artifact, then metadata..."
           scp $SSHOPTS info.json "$REMOTE:$DEPLOY_PATH/.info.json.new"
           ssh $SSHOPTS "$REMOTE" "
             set -e
             cd '$DEPLOY_PATH'
+            mv .htaccess.new .htaccess
             mv .kw-security.zip.new kw-security.zip
             mv .info.json.new info.json
             chmod 644 kw-security.zip info.json .htaccess
@@ -719,6 +706,37 @@ jobs:
           echo "endpoint hardening verified"
 
           echo "::notice::Endpoint verified: $BASE serving $V."
+
+      - name: Create and push tag
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          git tag "$V"
+          git push origin "$V"
+
+      - name: Create GitHub Release with zip asset
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          # Body was assembled by the "Compose release notes" step: plain-language
+          # WHAT/WHY on top, technical detail collapsed underneath. The plugin
+          # reads this back to show "what's new" in its own update alert.
+          if [ -s "$RUNNER_TEMP/notes.md" ]; then
+            gh release create "$V" \
+              --title "$V" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              "kw-security.zip"
+          else
+            gh release create "$V" \
+              --title "$V" \
+              --generate-notes \
+              "kw-security.zip"
+          fi
+          echo "::notice::Release $V published. PUC-enabled sites will see the update on their next poll (~12h)."
 
       # Announcement is best-effort: continue-on-error means a Slack outage or a
       # misconfigured webhook never fails an otherwise-successful release. It
