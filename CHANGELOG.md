@@ -51,6 +51,41 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.09.03
+
+### What's new
+- Slack alerts for plugin activation/deactivation, an admin account being
+  granted or deleted, a defense being switched off, and similar no longer
+  say "Activated by: system/guest" when nobody was logged in at the time.
+  They now say **System**, **WP-CLI**, or **Scheduled Task (WP-Cron)**,
+  whichever actually applies.
+
+### Why it matters
+- None of these actions can be performed by a real anonymous site visitor —
+  they all require a WordPress capability no guest holds — so "guest" was
+  never accurate. It read as "an unknown visitor did this," which is a very
+  different, more alarming claim than what actually happened: the site's
+  own automation (a scheduled update, a `wp` command, a plugin restored via
+  FTP or a host's file manager) re-triggered the action outside any admin
+  session.
+
+### Changed
+- `KW_Activity_Log::attribute_system_actor()` (new) supplies this
+  attribution for `on_plugin_activated`, `on_plugin_deactivated`, and the
+  plugin branch of `on_upgrader_complete` — checking the dashboard's own
+  signed actions first, then WP-CLI, then WP-Cron, before falling back to
+  "System". Left unchanged: `on_user_register` and `on_profile_update`,
+  where an unauthenticated request can legitimately be a real visitor
+  (self-registration), and `security-alerts.php`'s password-reset and
+  blocked-upload alerts, which can too (a self-service reset, a public-form
+  upload attempt).
+- `KW_Activity_Log::system_actor_label()` (new) exposes the same logic as a
+  plain string for `security-alerts.php`'s Slack notifications, replacing
+  its own `current_user_label()` on exactly the alerts above that can never
+  legitimately be anonymous (plugin activate/deactivate, admin granted/
+  deleted, Super Admin granted/revoked, a defense disabled, a WooCommerce
+  REST key created).
+
 ## 26.09.02
 
 ### What's new

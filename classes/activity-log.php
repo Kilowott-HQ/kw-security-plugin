@@ -368,7 +368,7 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                 'object_subtype' => $plugin,
                 'object_name'    => ! empty( $data['Name'] ) ? $data['Name'] : $plugin,
             );
-            self::attribute_dashboard_actor( $args );
+            self::attribute_system_actor( $args );
             self::insert( $args );
         }
 
@@ -383,7 +383,7 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                 'object_subtype' => $plugin,
                 'object_name'    => ! empty( $data['Name'] ) ? $data['Name'] : $plugin,
             );
-            self::attribute_dashboard_actor( $args );
+            self::attribute_system_actor( $args );
             self::insert( $args );
         }
 
@@ -407,7 +407,7 @@ if ( ! class_exists( 'KW_Activity_Log' ) ) {
                         'object_subtype' => $plugin,
                         'object_name'    => ! empty( $data['Name'] ) ? $data['Name'] : $plugin,
                     );
-                    self::attribute_dashboard_actor( $args );
+                    self::attribute_system_actor( $args );
                     self::insert( $args );
                 }
             } elseif ( 'theme' === $type ) {
@@ -724,6 +724,67 @@ YQIDAQAB
         }
 
         /**
+         * Same idea as attribute_dashboard_actor(), but for events that can
+         * never legitimately be triggered by a real anonymous visitor —
+         * activating, deactivating, installing, or updating a plugin always
+         * requires a WordPress capability no guest holds. Falling through to
+         * "Guest" here previously misread as "an anonymous site visitor did
+         * this" when the reality is closer to "no HTTP session was involved
+         * at all" — a scheduled auto-update, a `wp plugin activate` command,
+         * or the site's own re-activation of a plugin restored via FTP or a
+         * host's file manager, none of which run inside a WordPress user
+         * session and so can never be told apart from each other beyond
+         * WP-CLI and WP-Cron specifically. Not appropriate for an event a
+         * real anonymous visitor CAN legitimately trigger themselves (a
+         * self-service password reset, a blocked upload from a public form)
+         * — those keep using attribute_dashboard_actor()'s plain "Guest".
+         */
+        private static function attribute_system_actor( array &$args ) {
+            if ( get_current_user_id() ) {
+                return;
+            }
+            $args['user_id'] = 0;
+
+            if ( class_exists( 'KW_Security_Dashboard_Actor' ) ) {
+                $role = KW_Security_Dashboard_Actor::get();
+                if ( $role ) {
+                    $args['user_caps'] = 'kw-dashboard:' . $role;
+                    return;
+                }
+            }
+            if ( defined( 'WP_CLI' ) && WP_CLI ) {
+                $args['user_caps'] = 'system:cli';
+                return;
+            }
+            if ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) {
+                $args['user_caps'] = 'system:cron';
+                return;
+            }
+            $args['user_caps'] = 'system';
+        }
+
+        /**
+         * Public counterpart to attribute_system_actor(), returning a plain
+         * string rather than mutating a log row's fields — for callers
+         * outside this class (security-alerts.php's Slack notifications)
+         * that need the same "who is behind this, given it can never really
+         * be an anonymous visitor" label. Same scope restriction applies:
+         * only for events a real anonymous visitor cannot legitimately
+         * trigger themselves.
+         */
+        public static function system_actor_label() {
+            $user = wp_get_current_user();
+            if ( $user && $user->exists() ) {
+                return $user->user_email
+                    ? $user->user_login . ' (' . $user->user_email . ')'
+                    : $user->user_login;
+            }
+            $args = array();
+            self::attribute_system_actor( $args );
+            return self::dashboard_actor_label( $args['user_caps'] );
+        }
+
+        /**
          * Human-readable label for a role known only by its dashboard key
          * ('viewer' | 'admin' | 'superadmin') — capitalized the way the
          * dashboard itself displays it, not just ucfirst().
@@ -749,6 +810,12 @@ YQIDAQAB
             }
             if ( 'kw-dashboard' === $user_caps ) {
                 return 'KW Dashboard';
+            }
+            if ( 'system:cli' === $user_caps ) {
+                return 'WP-CLI';
+            }
+            if ( 'system:cron' === $user_caps ) {
+                return 'Scheduled Task (WP-Cron)';
             }
             if ( 'system' === $user_caps ) {
                 return 'System';

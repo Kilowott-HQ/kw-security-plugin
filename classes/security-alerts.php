@@ -797,7 +797,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 sprintf( 'Administrator privilege granted to %s', $login ),
                 array(
                     'User'       => $login,
-                    'Granted by' => $this->current_user_label(),
+                    'Granted by' => KW_Activity_Log::system_actor_label(),
                     'IP'         => $this->client_ip(),
                 )
             );
@@ -849,7 +849,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 sprintf( 'Super Admin (network-wide) privilege %s %s', $verb, $login ),
                 array(
                     'User'       => $login,
-                    $actor_label => $this->current_user_label(),
+                    $actor_label => KW_Activity_Log::system_actor_label(),
                     'IP'         => $this->client_ip(),
                 )
             );
@@ -879,7 +879,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 sprintf( 'Administrator account deleted: %s', $user->user_login ),
                 array(
                     'User'       => $user->user_login,
-                    'Deleted by' => $this->current_user_label(),
+                    'Deleted by' => KW_Activity_Log::system_actor_label(),
                     'IP'         => $this->client_ip(),
                 )
             );
@@ -902,7 +902,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 sprintf( 'KW Security defense(s) switched off: %s', implode( ', ', $disabled ) ),
                 array(
                     'Disabled'   => implode( ', ', $disabled ),
-                    'Changed by' => $this->current_user_label(),
+                    'Changed by' => KW_Activity_Log::system_actor_label(),
                     'IP'         => $this->client_ip(),
                 )
             );
@@ -961,7 +961,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 sprintf( 'Security plugin deactivated: %s', $name ),
                 array(
                     'Plugin'         => $plugin,
-                    'Deactivated by' => $this->current_user_label(),
+                    'Deactivated by' => KW_Activity_Log::system_actor_label(),
                     'IP'             => $this->client_ip(),
                     'Impact'         => sprintf( '%s is no longer protecting this site.', $name ),
                 )
@@ -986,7 +986,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                     sprintf( 'Security plugin activated: %s', $name ),
                     array(
                         'Plugin'       => $plugin,
-                        'Activated by' => $this->current_user_label(),
+                        'Activated by' => KW_Activity_Log::system_actor_label(),
                         'IP'           => $this->client_ip(),
                     )
                 );
@@ -1001,7 +1001,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 sprintf( 'File-manager plugin activated: %s', $name ),
                 array(
                     'Plugin'       => $plugin,
-                    'Activated by' => $this->current_user_label(),
+                    'Activated by' => KW_Activity_Log::system_actor_label(),
                     'IP'           => $this->client_ip(),
                     'Risk'         => 'Grants direct file CRUD via wp-admin — verify this was intentional.',
                 )
@@ -1142,7 +1142,7 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                     'Description' => $desc,
                     'Permissions' => $perm,
                     'For user'    => $target ? $target->user_login : ( '#' . $target_user_id ),
-                    'Created by'  => $this->current_user_label(),
+                    'Created by'  => KW_Activity_Log::system_actor_label(),
                     'IP'          => $this->client_ip(),
                 )
             );
