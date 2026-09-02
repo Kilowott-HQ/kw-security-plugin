@@ -51,6 +51,36 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.09.06
+
+### What's new
+- Plugin Lockout's protection now actually holds when JavaScript is on —
+  which is to say, for every normal visitor. 26.09.05's install block (and,
+  it turns out, the original three-plugin activate/update/delete block too)
+  only caught a plain page-load request; the real "Add Plugin", "Install
+  Now", "Update Now", "Activate", and "Delete" controls all submit through
+  a different request type this missed entirely. The "Add Plugin" button
+  and menu item are also hidden outright while this is on, rather than
+  visible but blocked.
+
+### Why it matters
+- WordPress's modern Plugins screens submit almost every action via
+  JavaScript rather than a page reload. Checking only the page-reload path
+  meant Plugin Lockout was only ever stopping a visitor with JavaScript
+  turned off — everyone else could install, activate, update, or delete
+  through the normal UI without hitting the block at all.
+
+### Changed
+- `KW_Plugin_Lockout::block_ajax_requests()` (new) mirrors
+  `block_mutating_requests()` for the four plugin actions WordPress
+  dispatches through `admin-ajax.php`: `install-plugin` (blocked
+  unconditionally, any plugin), and `activate-plugin` / `update-plugin` /
+  `delete-plugin` (scoped to the three locked plugins, same as the
+  page-reload path).
+- "Plugins > Add New" is removed from the admin sidebar, and the
+  "Add Plugin" page-title button on the Plugins screen is hidden via a
+  scoped inline style, while Plugin Lockout is on.
+
 ## 26.09.04
 
 ### What's new

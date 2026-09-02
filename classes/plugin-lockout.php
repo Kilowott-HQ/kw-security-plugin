@@ -18,21 +18,40 @@
  * isn't expressible as a capability at all. This never strips any of them
  * (every wp-admin plugin screen works normally for anything other than the
  * three locked plugins and installing something new) and instead blocks
- * specific *requests* on admin_init, before the target page's own handler
- * runs, by checking which plugin(s) the request actually names against the
- * locked list:
+ * specific *requests*, before the target handler runs, by checking which
+ * plugin(s) the request actually names against the locked list. Two
+ * dispatch paths carry these requests and BOTH have to be covered: a
+ * classic page load (plugins.php, update.php — still used for a no-JS
+ * visitor or a hand-crafted request) and admin-ajax.php, which is what the
+ * default JavaScript-driven UI actually submits to for install, activate,
+ * update, and delete. Checking only the classic path (an earlier version of
+ * this file did) blocks nobody real, since every mainstream browser takes
+ * the AJAX path by default:
  *
  *   - plugins.php    — activate/deactivate/delete (single: `plugin`,
  *                       bulk: `checked[]`, WP_List_Table's standard
- *                       checkbox field name).
+ *                       checkbox field name). No AJAX equivalent for
+ *                       deactivate exists in core; delete and activate do
+ *                       (see admin-ajax.php below) but a bulk action on
+ *                       this screen still submits classically.
  *   - update.php     — single update (`action=upgrade-plugin`, `plugin`),
  *                       bulk update (`action=update-selected`, `plugins`
  *                       or `checked[]`) — both scoped to the three locked
  *                       plugins — and install, from wordpress.org
  *                       (`action=install-plugin`) or a direct .zip upload
- *                       (`action=upload-plugin`) — blocked unconditionally,
- *                       any plugin.
+ *                       (`action=upload-plugin`, no AJAX equivalent in
+ *                       core) — blocked unconditionally, any plugin.
+ *   - admin-ajax.php — wp_ajax_install-plugin (`slug` in $_POST, blocked
+ *                       unconditionally, same reasoning as update.php's
+ *                       install-plugin) and wp_ajax_activate-plugin /
+ *                       update-plugin / delete-plugin (`plugin` in $_POST,
+ *                       scoped to the three locked plugins).
  *   - plugin-editor.php — the `file` param's leading path segment.
+ *
+ * Installing a new plugin is additionally hidden from the UI (the sidebar's
+ * "Add New" submenu, and plugins.php's page-title "Add Plugin" button) —
+ * not the enforcement, which holds regardless, but there's no point
+ * pointing someone at a screen whose only action dead-ends.
  *
  * The dashboard's own remote endpoints (classes/plugin-toggle.php,
  * classes/update-trigger.php, classes/plugin-file-update.php,
@@ -65,6 +84,31 @@ if ( ! class_exists( 'KW_Plugin_Lockout' ) ) {
             add_filter( 'plugin_action_links', array( $this, 'strip_row_actions' ), 999, 2 );
             add_action( 'admin_init', array( $this, 'block_mutating_requests' ), 1 );
             add_action( 'admin_notices', array( $this, 'notice' ) );
+            add_action( 'admin_menu', array( $this, 'remove_add_new_submenu' ), 999 );
+            add_action( 'admin_head-plugins.php', array( $this, 'hide_add_plugin_button' ) );
+        }
+
+        /**
+         * Removes "Plugins > Add New" from the admin sidebar. Installing is
+         * blocked regardless of how someone reaches plugin-install.php (see
+         * block_mutating_requests()/block_ajax_requests()), so this is UX
+         * only — pointing at a menu item that leads nowhere useful is worse
+         * than not showing it.
+         */
+        public function remove_add_new_submenu() {
+            remove_submenu_page( 'plugins.php', 'plugin-install.php' );
+        }
+
+        /**
+         * The page-title "Add Plugin" button on plugins.php is printed
+         * inline by WordPress core (wp-admin/plugins.php), gated only on
+         * the install_plugins capability — there's no filter to remove just
+         * this one link the way plugin_action_links covers row actions.
+         * Same reasoning as remove_add_new_submenu(): the button would only
+         * lead to a page-install.php that dead-ends on the actual attempt.
+         */
+        public function hide_add_plugin_button() {
+            echo '<style>.page-title-action[href*="plugin-install.php"]{display:none;}</style>';
         }
 
         /**
@@ -81,6 +125,19 @@ if ( ! class_exists( 'KW_Plugin_Lockout' ) ) {
 
         public function block_mutating_requests() {
             global $pagenow;
+
+            // The modern Plugins screen and Add Plugins screen submit every
+            // mutating action (install, activate, update, delete) via
+            // admin-ajax.php through JavaScript, not a full page load to
+            // plugins.php/update.php — those two only still run for a
+            // no-JS fallback or a hand-crafted request. $pagenow is
+            // 'admin-ajax.php' here, not 'update.php' or 'plugins.php', so
+            // neither branch below ever saw this path: Plugin Lockout was
+            // only ever stopping someone with JavaScript disabled.
+            if ( wp_doing_ajax() ) {
+                $this->block_ajax_requests();
+                return;
+            }
 
             if ( 'plugins.php' === $pagenow ) {
                 $action  = isset( $_REQUEST['action'] ) ? sanitize_key( wp_unslash( $_REQUEST['action'] ) ) : '';
@@ -138,6 +195,44 @@ if ( ! class_exists( 'KW_Plugin_Lockout' ) ) {
                     if ( 0 === strpos( $file, $slug . '/' ) ) {
                         self::die_locked();
                     }
+                }
+            }
+        }
+
+        /**
+         * admin-ajax.php equivalent of block_mutating_requests() above, for
+         * the four plugin actions WordPress core dispatches through it
+         * rather than a page load: install-plugin (wp_ajax_install_plugin,
+         * `slug` in $_POST — no installed plugin yet to check against, same
+         * reasoning as the update.php branch above), and activate-plugin /
+         * update-plugin / delete-plugin (each keyed on `plugin`, the file
+         * path, in $_POST — checked against the locked list exactly like
+         * plugins.php's bulk actions). upload-plugin has no AJAX handler in
+         * core — the Upload Plugin form still submits as a classic
+         * multipart POST to update.php, already covered above.
+         *
+         * wp_send_json_error() rather than die_locked()'s wp_die(): the
+         * client-side JS (wp-admin/js/updates.js) expects this exact
+         * response shape on failure and renders errorMessage inline, the
+         * same as a real failure from core's own handler would. A wp_die()
+         * here would still stop the action, but as a jumbled raw response
+         * the JS was never written to parse.
+         */
+        private function block_ajax_requests() {
+            $action = isset( $_REQUEST['action'] ) ? sanitize_key( wp_unslash( $_REQUEST['action'] ) ) : '';
+
+            if ( 'install-plugin' === $action ) {
+                wp_send_json_error( array(
+                    'errorMessage' => __( 'KW Security — Plugin Lockout is on: installing a new plugin from this site is blocked. Use the KW Security Dashboard\'s Add Plugin page instead.', 'kw-security' ),
+                ) );
+            }
+
+            if ( in_array( $action, array( 'activate-plugin', 'update-plugin', 'delete-plugin' ), true ) ) {
+                $plugin = isset( $_POST['plugin'] ) ? sanitize_text_field( wp_unslash( $_POST['plugin'] ) ) : '';
+                if ( in_array( $plugin, self::LOCKED_PLUGIN_FILES, true ) ) {
+                    wp_send_json_error( array(
+                        'errorMessage' => __( 'KW Security — Plugin Lockout is on: KW Security, KW Performance, and Wordfence can only be managed through the KW Security Dashboard, not from this site directly.', 'kw-security' ),
+                    ) );
                 }
             }
         }
