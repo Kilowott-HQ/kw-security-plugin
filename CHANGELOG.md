@@ -51,6 +51,24 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.09.04
+
+### What's new
+- The "Update available for KW Security or Wordfence" Slack alert is
+  switched off fleet-wide.
+
+### Why it matters
+- With every site's own Slack webhook now typically pointed at the same
+  shared channel, one KW Security release meant one of these alerts per
+  registered site landing in that channel at once. The setting to turn it
+  off is per-site, so it couldn't be silenced fleet-wide from the settings
+  screen alone.
+
+### Changed
+- `check_watched_plugin_updates()` is now a no-op regardless of the stored
+  per-site setting. The checkbox is left in place (so no site's saved
+  preferences are reset) but now has no effect; its label says so.
+
 ## 26.09.03
 
 ### What's new

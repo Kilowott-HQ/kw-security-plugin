@@ -149,7 +149,12 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
                 // reset the saved preference on every existing site.
                 'wordfence_deactivated' => __( 'Security plugin deactivated (Wordfence or KW Security)', 'kw-security' ),
                 'security_plugin_activated' => __( 'Security plugin activated (Wordfence or KW Security)', 'kw-security' ),
-                'watched_plugin_update' => __( 'Update available for KW Security or Wordfence (any version, with release notes)', 'kw-security' ),
+                // Checkbox kept visible (rather than removed) so the saved
+                // preference isn't silently reset, but the alert itself is
+                // hard-disabled in check_watched_plugin_updates() regardless
+                // of this setting — see that method for why. Toggling this
+                // checkbox has no effect either way.
+                'watched_plugin_update' => __( 'Update available for KW Security or Wordfence (any version, with release notes) — currently disabled fleet-wide', 'kw-security' ),
                 'plugin_update_critical' => __( 'Plugin update available — security patch or major version (any other plugin)', 'kw-security' ),
                 'file_manager_active' => __( 'File-manager plugin active (direct file CRUD — high risk)', 'kw-security' ),
                 'wordfence_alert'    => __( 'Relay Wordfence alerts (mirrors Wordfence email alerts to Slack)', 'kw-security' ),
@@ -1252,78 +1257,26 @@ if ( ! class_exists( 'KW_Security_Alerts' ) ) {
         }
 
         /**
-         * Alert on any available update to a watched security plugin (KW
-         * Security or Wordfence), whatever the size of the version jump, with
-         * an excerpt of the release notes so the team can see what the update
-         * actually contains rather than just that a number changed.
-         *
-         * Deliberately NOT gated on from_wordfence(): Wordfence relays findings
-         * about OTHER plugins, never about an update to KW Security itself, so
-         * standing down here would silence the main case this exists for.
+         * Retired. Used to alert on any available update to a watched
+         * security plugin (KW Security or Wordfence), with an excerpt of the
+         * release notes — see the note in the method body for why this was
+         * turned off. Left as a no-op, rather than removing it and its call
+         * site in on_plugins_update_check(), so reviving it later is a
+         * one-line revert.
          *
          * @param object $transient The update_plugins site transient.
          */
         private function check_watched_plugin_updates( $transient ) {
-            if ( ! self::is_category_enabled( 'watched_plugin_update' ) ) {
-                return;
-            }
-
-            $watched = $this->watched_plugins();
-            $checked = ( isset( $transient->checked ) && is_array( $transient->checked ) ) ? $transient->checked : array();
-
-            $alerted = self::get_alerted_updates( self::OPTION_WATCHED_UPDATES );
-            $pruned  = $this->prune_alerted_updates( $alerted, $checked );
-            $changed = ( $pruned !== $alerted );
-            $alerted = $pruned;
-
-            $to_send = array();
-
-            foreach ( $transient->response as $file => $update ) {
-                if ( ! in_array( $file, $watched, true ) || empty( $update->new_version ) ) {
-                    continue;
-                }
-                $new_ver = (string) $update->new_version;
-                $cur_ver = $this->installed_plugin_version( $file, $checked );
-
-                // Nothing to say when the "update" is the installed version.
-                if ( '' !== $cur_ver && version_compare( $cur_ver, $new_ver, '>=' ) ) {
-                    continue;
-                }
-
-                $key = $file . '@' . $new_ver;
-                if ( isset( $alerted[ $key ] ) ) {
-                    continue;
-                }
-
-                $to_send[] = array( 'file' => $file, 'cur' => $cur_ver, 'new' => $new_ver );
-                $alerted[ $key ] = time();
-                $changed         = true;
-            }
-
-            if ( $changed ) {
-                self::save_alerted_updates( self::OPTION_WATCHED_UPDATES, $alerted );
-            }
-
-            foreach ( $to_send as $a ) {
-                $name = $this->watched_plugin_label( $a['file'] );
-                $this->notify(
-                    'watched_plugin_update',
-                    sprintf(
-                        'Update available: %s %s → %s',
-                        $name,
-                        '' !== $a['cur'] ? $a['cur'] : '?',
-                        $a['new']
-                    ),
-                    array_merge(
-                        array(
-                            'Plugin'    => $name,
-                            'Installed' => '' !== $a['cur'] ? $a['cur'] : 'unknown',
-                            'Available' => $a['new'],
-                        ),
-                        $this->fetch_release_notes( $a['file'], $a['new'] )
-                    )
-                );
-            }
+            // Retired: this alert fired once per site per new version, and
+            // with every site's webhook now typically pointed at the same
+            // shared channel (see the fleet-wide "point every site's webhook
+            // at one channel" action), that meant one KW Security release
+            // produced one of these per registered site, all landing in the
+            // same place at once. Hard-disabled unconditionally rather than
+            // through is_category_enabled(): that setting is per-site, saved
+            // explicitly (true or false) by every site that has ever opened
+            // its Slack alert settings, so changing the category's default
+            // would not have silenced a single already-configured site.
         }
 
         /**
