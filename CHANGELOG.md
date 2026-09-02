@@ -56,6 +56,8 @@ automatically, so add the heading for the version you are about to release.
 ### What's new
 - The "Update available for KW Security or Wordfence" Slack alert is
   switched off fleet-wide.
+- Plugin Lockout now also blocks installing any new plugin from this site's
+  wp-admin, not just managing the three locked ones.
 
 ### Why it matters
 - With every site's own Slack webhook now typically pointed at the same
@@ -63,11 +65,19 @@ automatically, so add the heading for the version you are about to release.
   registered site landing in that channel at once. The setting to turn it
   off is per-site, so it couldn't be silenced fleet-wide from the settings
   screen alone.
+- Plugin Lockout previously only restricted the three plugins it names —
+  installing something else entirely was untouched, which isn't a lockout
+  in any meaningful sense. A new plugin can still be installed remotely
+  from the KW Security Dashboard's own Add Plugin page while this is on.
 
 ### Changed
 - `check_watched_plugin_updates()` is now a no-op regardless of the stored
   per-site setting. The checkbox is left in place (so no site's saved
   preferences are reset) but now has no effect; its label says so.
+- `update.php`'s `install-plugin` (from wordpress.org) and `upload-plugin`
+  (direct .zip) actions are now blocked unconditionally while Plugin
+  Lockout is on, rather than only when the target was one of the three
+  locked plugins.
 
 ## 26.09.03
 
