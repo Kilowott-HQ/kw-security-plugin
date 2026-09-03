@@ -24,7 +24,7 @@ A lightweight WordPress security plugin that provides controlled updates and ess
 - 🔒 **User Lockout**: Blocks adding, editing, or deleting WordPress users from wp-admin or the REST API entirely — even for a logged-in Administrator. The only way to manage users while it's on is through the dashboard
 - 🔑 **One-Click Admin Login**: The dashboard can log an admin straight into wp-admin via a single-use, 60-second token for a dedicated "KW Security Dashboard" account — no password needed, recorded in the Activity Log, and capped at an 8-hour session regardless of how long the tab stays open
 - ✉️ **Dashboard-Triggered Password Reset**: Send the standard reset-link email, or set a new password directly, for any admin account — from the dashboard
-- 🕵️ **Dashboard Actor Attribution**: Plugin/Wordfence activation, deactivation, updates, and user creation/edits triggered from the dashboard are attributed to the responsible dashboard role in the Activity Log (e.g. "SuperAdmin (KW SECURITY DASH)") instead of showing as "Guest"
+- 🕵️ **Actor Attribution**: Plugin/Wordfence activation, deactivation, updates, and user creation/edits triggered from the dashboard are attributed to the responsible dashboard role in the Activity Log (e.g. "SuperAdmin (KW SECURITY DASH)") instead of showing as "Guest". The same events happening with nobody logged in — a scheduled update, a `wp` command, a plugin restored via FTP or a host's file manager — are labeled **System**, **WP-CLI**, or **Scheduled Task (WP-Cron)** instead, for the same reason: none of them can be performed by a real anonymous site visitor
 - ⚙️ **Feature Toggles**: Every feature can be enabled or disabled per site from **Settings → KW Security**
 
 ## Installation
@@ -346,10 +346,12 @@ release still publishes with its full notes — only the Slack post is suppresse
 run log says so.
 
 > Note that `skip_announcement` silences the *release* channel only. Sites running KW
-> Security have their own per-site Slack alerts, and one of those fires when an update
-> becomes available (see the **Update available for KW Security or Wordfence** alert
-> category). A quiet release is not an invisible one; to silence that too, turn the
-> category off per site under **Settings → KW Security**.
+> Security have their own per-site Slack alerts — the **Update available for KW Security
+> or Wordfence** category among them, though as of 26.09.04 it's hard-disabled fleet-wide
+> regardless of any site's own setting (it was producing one alert per registered site
+> per release, all landing in the same shared channel at once). The checkbox for it is
+> still shown under **Settings → KW Security → Slack Security Alerts** so no site's saved
+> preferences get reset, but toggling it has no effect either way.
 
 ### Configuring the Slack announcement channel
 
