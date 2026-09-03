@@ -51,6 +51,30 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
+## 26.09.07
+
+### What's new
+- The mu-plugin file that remote activation depends on (in
+  `wp-content/mu-plugins/`) now re-installs itself automatically on the
+  first wp-admin page load if it's ever missing or out of date, instead of
+  only being written once at activation.
+
+### Why it matters
+- On some sites that one-time activation copy never landed — the same
+  class of WordPress quirk that occasionally skips the first activation
+  ping — leaving the site needing that file uploaded there by hand before
+  remote activate/deactivate would work. It now fixes itself without any
+  manual step.
+
+### Changed
+- `KW_Security::ensure_mu_loader_installed()` (new), hooked to `admin_init`
+  alongside the existing telemetry check-in, calls
+  `KW_Security_Mu_Loader::install()` on every wp-admin load. `install()`
+  was already a cheap no-op when the file is present and current
+  (file_exists + md5 compare), so this does not add meaningful overhead —
+  it just stops depending solely on the activation hook and the
+  self-update hook having fired.
+
 ## 26.09.06
 
 ### What's new

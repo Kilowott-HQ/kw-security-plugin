@@ -59,6 +59,16 @@ if (!class_exists('KW_Security')) {
             // Automatic telemetry check-in for existing sites
             add_action('admin_init', array($this, 'check_telemetry_registration'));
 
+            // Self-heals the mu-plugin activator on every wp-admin load —
+            // covers sites where the one-time activation hook never fired
+            // (the same class of issue check_telemetry_registration above
+            // guards against) and hosts that wipe wp-content/mu-plugins/ on
+            // a backup restore. install() itself is a no-op cheap check
+            // (file_exists + md5 compare) when the file is already correct,
+            // so this is a real fix in place of "run the manual copy step
+            // once and hope it stays," not a periodic re-copy.
+            add_action('admin_init', array($this, 'ensure_mu_loader_installed'));
+
             // Keep the bundled mu-plugin activator in sync after this plugin
             // updates itself, so a newer copy replaces whatever's already in
             // wp-content/mu-plugins/ without a separate manual step.
@@ -71,6 +81,17 @@ if (!class_exists('KW_Security')) {
         public function check_telemetry_registration() {
             if (class_exists('KW_Security_Telemetry')) {
                 KW_Security_Telemetry::maybe_auto_register();
+            }
+        }
+
+        /**
+         * Re-copies the bundled mu-plugin activator if it's missing or out
+         * of date. Unlike the activation-hook and self-update copies, this
+         * one does not depend on any one-time event having fired correctly.
+         */
+        public function ensure_mu_loader_installed() {
+            if (class_exists('KW_Security_Mu_Loader')) {
+                KW_Security_Mu_Loader::install();
             }
         }
 
