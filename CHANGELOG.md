@@ -51,7 +51,7 @@ automatically, so add the heading for the version you are about to release.
 
 ---
 
-## 26.09.07
+## 26.09.10
 
 ### What's new
 - The mu-plugin file that remote activation depends on (in
